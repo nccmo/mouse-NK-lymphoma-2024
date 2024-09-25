@@ -1,0 +1,463 @@
+---
+title: "GSEA_Trp53tumor_vs_Trp53LMP1tumor"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r new packages}
+library(dbplyr)
+library(clusterProfiler)
+library(AnnotationHub)
+library(org.Mm.eg.db)
+library(enrichplot)
+library(pathview)
+library(ggnewscale)
+library(DOSE)
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+library(broom)
+library(presto)
+library(biomaRt)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/5_Pathway/02_GSEA_Trp53tumor_vs_Trp53LMP1tumor/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/5_Pathway/02_GSEA_Trp53tumor_vs_Trp53LMP1tumor/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/5_Pathway/02_GSEA_Trp53tumor_vs_Trp53LMP1tumor/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load Seurat obj}
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_RNAdim45dim011_afterExclude_v1_other3660SP.rds")
+this_dataset <- "mouseNK_CITEdata"
+```
+
+```{r load metadata}
+Annotation_metadata_filt1_df <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/3_reclutser/9_Reannotation/06_integrate_subclusters/table/metadata_mouseNK_data_celltype_overall.txt")
+
+Annotation_metadata_filt1_df$cellbarcode2 %>% length()
+```
+
+```{r combine metadata}
+Annotation_metadata_filt1_df %>% colnames()
+mouseNK_data@meta.data %>% colnames()
+
+setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))
+unique(c("cellbarcode2", setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))))
+
+annotation_df <- Annotation_metadata_filt1_df %>% 
+  dplyr::select(unique(c("cellbarcode2", 
+                         setdiff(colnames(Annotation_metadata_filt1_df), 
+                                 colnames(mouseNK_data@meta.data))))) %>% 
+  as.data.frame()
+rownames(annotation_df) <- annotation_df$cellbarcode2
+annotation_df %>% head()
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = annotation_df)
+```
+
+```{r add diseasetype}
+mouseNK_data@meta.data <- mouseNK_data@meta.data %>% 
+  mutate(
+    disease_type_edit = case_when(
+      disease_type %in% c("mNK_SG", "mNK_Tu") ~ "SG/Other",
+      disease_type == "mNK_SP"                ~ "SP"
+    ),
+    disease_type2_edit = case_when(
+      disease_type2 %in% c("CreN_pre", "CreP_pre") ~ "Pre-tumor",
+      disease_type2 == "CreP_Tumor"                ~ "Trp53-/- tumor",
+      disease_type2 == "CreLMP1P_Tumor"            ~ "Trp53-/- LMP1+ tumor"
+    ),
+    disease_type3 = case_when(
+      disease_type == "mNK_SG" & disease_type2 == "CreN_pre"       ~ "SG_CreN_pre",
+      disease_type == "mNK_SG" & disease_type2 == "CreP_pre"       ~ "SG_CreP_pre",
+      disease_type == "mNK_SP" & disease_type2 == "CreN_pre"       ~ "SP_CreN_pre",
+      disease_type == "mNK_SP" & disease_type2 == "CreP_pre"       ~ "SP_CreP_pre",
+      disease_type == "mNK_SG" & disease_type2 == "CreP_Tumor"     ~ "SG_CreP_LMPn_tumor",
+      # disease_type == "mNK_SG" & disease_type2 == "CreLMP1P_Tumor" ~ "SG_CreP_LMPp_tumor",
+      disease_type == "mNK_SP" & disease_type2 == "CreP_Tumor"     ~ "SP_CreP_LMPn_tumor",
+      disease_type == "mNK_SP" & disease_type2 == "CreLMP1P_Tumor" ~ "SP_CreP_LMPp_tumor",
+      disease_type == "mNK_Tu" & disease_type2 == "CreLMP1P_Tumor" ~ "Tu_CreP_LMPp_tumor"
+    )
+  ) %>% 
+  mutate(
+    disease_type = fct_relevel(disease_type, c("mNK_SG", "mNK_Tu", "mNK_SP")),
+    disease_type_edit = fct_relevel(disease_type_edit, c("SG/Other", "SP")),
+    disease_type2 = fct_relevel(disease_type2, c("CreN_pre", "CreP_pre", "CreP_Tumor", "CreLMP1P_Tumor")),
+    disease_type2_edit = fct_relevel(disease_type2_edit, c("Pre-tumor", "Trp53-/- tumor", "Trp53-/- LMP1+ tumor")),
+    celltype_overall = fct_relevel(celltype_overall, c("CD4T", "CD8T", "B", 
+                                                       "Myeloid", "NK", "Other", 
+                                                       "Tumor_LMPn", "Tumor_LMPp")),
+    celltype_overall_detail = fct_relevel(celltype_overall_detail, 
+                                          c("CD4T_N", "CD4T_EM", "TREG",
+                                            "CD8T_N", "CD8T_CM", "CD8T_EM", "CD8T_RM", "CD8T_EX",
+                                            "B_Immature", "B_Mature", "Plasmablast",
+                                            "Mono", "Macro", "cDC1", "cDC2", "pDC", "mregDC", "MDSC",
+                                            "NK", "Other", "Tumor_LMPn", "Tumor_LMPp")),
+  )
+```
+
+```{r exclude uncomparable cluster}
+celltype_overall_detail_evaluable <- mouseNK_data@meta.data %>% 
+  dplyr::count(celltype_overall_detail, disease_type2_edit) %>% 
+  filter(n >= 10) %>% 
+  dplyr::count(celltype_overall_detail) %>% 
+  filter(n >= 3, 
+         !celltype_overall_detail %in% c("Tumor_LMPn", "Tumor_LMPp", "Other")) %>% 
+  pull(celltype_overall_detail) %>% 
+  as.character()
+
+setdiff(
+  mouseNK_data@meta.data$celltype_overall_detail %>% unique(),
+  celltype_overall_detail_evaluable
+)
+```
+
+```{r subset}
+Idents(mouseNK_data) <- mouseNK_data$disease_type2_edit
+mouseNK_data <- subset(x = mouseNK_data, idents = "Pre-tumor", invert = TRUE)
+
+print(str_c(unique(Idents(mouseNK_data)), collapse = " vs "))
+```
+
+# 2. DEG
+```{r identify DEG}
+celltype_overall_detail_evaluable
+
+rna.markers_all_forGprofiler5 <- tibble()
+
+for (i in 1:length(celltype_overall_detail_evaluable)) {
+  # i <- 1
+  this_celltype_detail <- celltype_overall_detail_evaluable[i]
+  print(this_celltype_detail)
+
+  Idents(mouseNK_data) <- mouseNK_data$celltype_overall_detail
+  mouseNK_subdata <- subset(x = mouseNK_data, idents = this_celltype_detail)
+
+  # DEG
+  Idents(mouseNK_subdata) <- mouseNK_subdata$disease_type2_edit
+  rna.markers_all_forGprofiler <- FindAllMarkers(mouseNK_subdata,
+                                                 min.cells.group = 10,
+                                                 assay = "SCT",
+                                                 only.pos = FALSE,
+                                                 min.pct = 0.25,
+                                                 logfc.threshold = 0.1)
+
+  gc()
+
+  # exclude Rps, Rpl, mt-, Tr-, Ig-, Jchain
+  rna.markers_all_forGprofiler <- rps_trv_ig_mt_mouse_exclusion(rna.markers_all_forGprofiler) %>%
+    mutate(assay = "SCT")
+
+  rna.markers_all_forGprofiler %>% head()
+  rna.markers_all_forGprofiler$gene %>% unique() %>% length()
+
+  # Average expressions of DEGs
+  check_genes_AverageExpRNA <- AverageExpression(mouseNK_subdata,
+                                                 features = unique(rna.markers_all_forGprofiler$gene),
+                                                 assay = "SCT")$SCT %>%
+    as_tibble(rownames = "gene") %>%
+    dplyr::select(gene, everything())
+
+  rna.markers_all_forGprofiler5tmp <- rna.markers_all_forGprofiler %>%
+    left_join(check_genes_AverageExpRNA) %>%
+    dplyr::rename(micetype = cluster) %>%
+    mutate(celltype_detail = this_celltype_detail) %>%
+    dplyr::select(assay, celltype_detail, micetype, gene, everything())
+
+  rna.markers_all_forGprofiler5 <- rna.markers_all_forGprofiler5 %>%
+    rbind(rna.markers_all_forGprofiler5tmp)
+}
+
+rna.markers_all_forGprofiler5 %>%
+  write_tsv(str_glue("{outdir_table}/DEG_LMPnTumor_vs_LMPpTumor_celltype_overall_detail.txt"))
+```
+
+```{r load features}
+feature_df <- read_tsv("data/aggr_result/230315_mouseNK_v1/filtered_feature_bc_matrix/features.tsv.gz", 
+                       col_names = c("ENS", "Gene", "Type"))
+```
+
+# 3. ENTREZ ID
+```{r msigdb for mouse}
+library(msigdbr)
+
+m_df <- msigdbr(species = "Mus musculus")
+head(m_df, 2) %>% as.data.frame
+
+msigdbr_gene_df <- m_df %>% 
+  dplyr::select(gene_symbol, entrez_gene, ensembl_gene) %>% 
+  distinct()
+msigdbr_gene_df %>% dim()
+msigdbr_gene_df %>% head()
+```
+
+```{r feature genes and msigdb}
+unique(feature_df$ENS) %>% head()
+unique(feature_df$ENS) %>% length()
+setdiff(unique(msigdbr_gene_df$ensembl_gene), unique(feature_df$ENS)) %>% length()
+setdiff(unique(feature_df$ENS), unique(msigdbr_gene_df$ensembl_gene)) %>% length()
+intersect(unique(feature_df$ENS), unique(msigdbr_gene_df$ensembl_gene)) %>% length()
+setdiff(unique(feature_df$Gene), unique(msigdbr_gene_df$gene_symbol)) %>% length()
+
+genes_other_than_msigdbr_df <- feature_df %>% 
+  filter(ENS %in% setdiff(unique(feature_df$ENS), unique(msigdbr_gene_df$ensembl_gene)))
+
+genes_other_than_msigdbr_df %>% dim()
+
+genes_other_than_msigdbr_df2 <- genes_other_than_msigdbr_df %>% 
+  filter(!Gene %in% c(str_subset(genes_other_than_msigdbr_df$Gene, pattern = "\\."), 
+                      str_subset(genes_other_than_msigdbr_df$Gene, pattern = "_TotalSeqC")))
+
+genes_other_than_msigdbr_df2 %>% dim()
+```
+
+```{r msigdb to ENTREZ}
+genes_other_than_msigdbr_df2_gene <- bitr(genes_other_than_msigdbr_df2$Gene, 
+                                          fromType = "SYMBOL", 
+                                          toType = "ENTREZID",
+                                          OrgDb = "org.Mm.eg.db") %>% 
+  dplyr::rename(gene = SYMBOL)
+
+genes_other_than_msigdbr_df2 %>% 
+  filter(!Gene %in% genes_other_than_msigdbr_df2_gene) %>% 
+  dim()
+```
+
+```{r feature genes and biomart}
+ensembl <- useMart('ensembl', dataset = 'mmusculus_gene_ensembl')
+
+annot <- getBM(
+  attributes = c(
+    'mgi_symbol',
+    'external_gene_name',
+    'ensembl_gene_id',
+    'entrezgene_id',
+    'gene_biotype'),
+  filters = 'ensembl_gene_id',
+  values = feature_df$ENS,
+  mart = ensembl)
+
+annot %>%
+  write_tsv(str_glue("{outdir_table}/df_genes_Biomart_duplicated_entrezgene_id.txt"))
+```
+
+```{r biomart to ENTREZ}
+annot_double <- annot %>% 
+  dplyr::count(mgi_symbol, external_gene_name, ensembl_gene_id) %>% 
+  filter(n >= 2)
+
+annot_double %>% dim()
+
+annot %>% 
+  dplyr::filter(mgi_symbol %in% unique(annot_double$mgi_symbol)) %>% 
+  dim()
+
+# if duplicated, adopt the smallest number.
+annot_min_df <- annot %>% 
+  filter(!is.na(entrezgene_id),
+         mgi_symbol != "") %>% 
+  dplyr::group_by(mgi_symbol, external_gene_name, ensembl_gene_id) %>% 
+  summarise(entrezgene_id = min(entrezgene_id, na.rm = FALSE)) %>% 
+  ungroup()
+
+annot %>% dim()
+annot_min_df %>% dim()
+
+annot2 <- annot_min_df %>% 
+  left_join(annot)
+```
+
+```{r add ENTREZ to DEG}
+rna.markers_all_forGprofiler2 <- rna.markers_all_forGprofiler %>%
+  left_join(feature_df, by = c("gene" = "Gene")) %>% 
+  left_join(annot2, by = c("ENS" = "ensembl_gene_id")) %>% 
+  left_join(msigdbr_gene_df, by = c("ENS" = "ensembl_gene")) %>% 
+  mutate(entrezgene_id2 = if_else(is.na(entrezgene_id), entrez_gene, entrezgene_id)) %>% 
+  dplyr::rename(ENTREZID = entrezgene_id2)
+```
+
+# 4. GSEA
+```{r load pathways}
+h.all.v2023.entrez_gmt <- read.gmt("ref/mouseSigDBv2023/mh.all.v2023.1.Mm.entrez.gmt")
+c2.cp.reactome.v2023.entrez_gmt <- read.gmt("ref/mouseSigDBv2023/m2.cp.reactome.v2023.1.Mm.entrez.gmt")
+c2.cp.wikipathways.v2023.entrez_gmt <- read.gmt("ref/mouseSigDBv2023/m2.cp.wikipathways.v2023.1.Mm.entrez.gmt")
+
+msigdb_v2023entrez_selected_gmt <- h.all.v2023.entrez_gmt %>% 
+  rbind(c2.cp.reactome.v2023.entrez_gmt,
+        c2.cp.wikipathways.v2023.entrez_gmt)
+
+msigdb_v2023entrez_selected_gmt %>% dim()
+```
+
+```{r run GSEA}
+source("../../R/enrichplot_gseaplot_modified.R")
+
+rna.markers_all_forGprofiler_withfilter <- rna.markers_all_forGprofiler2 %>% 
+  filter(abs(avg_log2FC) >= 0.2) %>% 
+  filter(!is.na(ENTREZID))
+
+rna.markers_all_forGprofiler2 %>% dim()
+rna.markers_all_forGprofiler2 %>% 
+  filter(abs(avg_log2FC) >= 0.2) %>% 
+  dim()
+rna.markers_all_forGprofiler_withfilter %>% dim()
+
+abs(rna.markers_all_forGprofiler_withfilter$avg_log2FC) %>% min()
+
+gsea_result_df <- tibble()
+gsea_result_genes_df <- tibble()
+
+micetype <- rna.markers_all_forGprofiler_withfilter$micetype %>% unique()
+
+for (i in 1:length(celltype_overall_detail_evaluable)) {
+  for (j in 1:length(micetype)) {
+    # i <- 7
+    # j <- 2
+    this_celltype_detail <- celltype_overall_detail_evaluable[i]
+    this_micetype <- micetype[j]
+    
+    print(paste(this_celltype_detail, " in ", this_micetype, " mice", sep = ""))
+    
+    dds <- rna.markers_all_forGprofiler_withfilter %>% 
+      filter(celltype_detail %in% this_celltype_detail) %>% 
+      filter(micetype %in% this_micetype) %>% 
+      arrange(avg_log2FC)
+    
+    geneList <- dds$avg_log2FC
+    head(geneList)
+    names(geneList) <- as.character(dds$ENTREZID)
+    head(geneList)
+    geneList = sort(geneList, decreasing = TRUE)
+    head(geneList)
+    
+    gsecc <- GSEA(geneList = geneList, 
+                  pvalueCutoff = 0.25,
+                  TERM2GENE = msigdb_v2023entrez_selected_gmt, 
+                  eps = 0,
+                  verbose = F)
+    
+    # HALLMARK_INTERFERON_GAMMA_RESPONSE
+    if (this_micetype == "Trp53-/- LMP1+ tumor" & i %in% c(2, 3, 7, 8, 9, 11, 12, 13, 16)) {
+      fig <- gseaplot2_2(gsecc,
+                         geneSetID = "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+                         title = str_glue("{this_celltype_detail}, Trp53-/- LMP1+ tumors vs Trp53-/- tumors\nHALLMARK_INTERFERON_GAMMA_RESPONSE"),
+                         color = "red",
+                         ylimit = c(-0.25, 0.75),
+                         pvalue_table = TRUE,
+                         pval_pos_x = 300,
+                         pval_pos_y = -0.1)
+
+      print(fig)
+      ggsave(str_glue("{outdir_pdf}/GSEA_HALLMARK_INTERFERON_GAMMA_RESPONSE_{this_celltype_detail}_LMPp_tumor.pdf"),
+             height = 7, width = 7)
+    }
+    
+    this_gsecc_df <- summary(gsecc) %>% 
+      tibble() %>% 
+      mutate(celltype_overall_detail = this_celltype_detail) %>% 
+      mutate(micetype = this_micetype) %>% 
+      dplyr::select(celltype_overall_detail, micetype, everything())
+    gsea_result_df <- gsea_result_df %>%
+      rbind(this_gsecc_df)
+    
+    this_edox_df <- summary(setReadable(gsecc, 'org.Mm.eg.db', 'ENTREZID')) %>% 
+      tibble() %>% 
+      mutate(celltype_overall_detail = this_celltype_detail) %>% 
+      mutate(micetype = this_micetype) %>% 
+      dplyr::select(celltype_overall_detail, micetype, everything())
+    gsea_result_genes_df <- gsea_result_genes_df %>% 
+      rbind(this_edox_df)
+  }
+}
+
+gsea_result_df %>% 
+  write_tsv(str_glue("{outdir_table}/df_GSEA_LMPnTumor_vs_LMPpTumor_celltype_overall_detail.txt"))
+
+gsea_result_genes_df %>% 
+  write_tsv(str_glue("{outdir_table}/df_GSEA_LMPnTumor_vs_LMPpTumor_celltype_overall_detail_with_genenames.txt"))
+```
+
+## for Supple table
+```{r save suppl table}
+tmp_mat_leading_edge <- gsea_result_df$leading_edge %>% 
+  str_split(pattern = ", ", simplify = TRUE)
+tmp_mat_leading_edge2 <- tmp_mat_leading_edge %>% 
+  str_extract_all(pattern = "[0-9]+", simplify = TRUE) %>% 
+  as.numeric()
+dim(tmp_mat_leading_edge2) <- dim(tmp_mat_leading_edge)
+colnames(tmp_mat_leading_edge2) <- c("tags", "list", "signal")
+df_leading_edge <- as_tibble(tmp_mat_leading_edge2)
+
+stopifnot(length(gsea_result_df$leading_edge) == nrow(df_leading_edge))
+
+gsea_result_df_edit <- gsea_result_df %>% 
+  dplyr::select(micetype, celltype_overall_detail, 
+                Description, setSize, enrichmentScore, NES, 
+                pvalue, qvalue, p.adjust) %>% 
+  bind_cols(df_leading_edge) %>% 
+  filter(micetype == "Trp53-/- LMP1+ tumor") %>% 
+  mutate(celltype_overall_detail = fct_inorder(celltype_overall_detail))
+
+gsea_result_df_edit %>% 
+  filter(NES > 0) %>% 
+  group_by(celltype_overall_detail) %>% 
+  dplyr::arrange(desc(NES), .by_group = TRUE) %>% 
+  write_tsv(str_glue("{outdir_table}/S9_mu_sc_non-m_pathway_T_vs_TL_LMPp.txt"))
+
+gsea_result_df_edit %>% 
+  filter(NES < 0) %>% 
+  group_by(celltype_overall_detail) %>% 
+  dplyr::arrange(NES, .by_group = TRUE) %>% 
+  mutate(micetype = "Trp53-/- tumor") %>% 
+  write_tsv(str_glue("{outdir_table}/S9_mu_sc_non-m_pathway_T_vs_TL_LMPn.txt"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

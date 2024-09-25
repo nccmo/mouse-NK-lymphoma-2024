@@ -1,0 +1,173 @@
+---
+title: "filtering_QC_v1"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2021/04/30"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+```
+
+```{r setup single cell}
+library(Seurat)
+library(Matrix)
+library(glmGamPoi)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make directory}
+dir.create("result/table/aggr/",      showWarnings = FALSE, recursive = TRUE)
+dir.create("result/pdf/aggr/",        showWarnings = FALSE, recursive = TRUE)
+dir.create("result/table/Robj/",      showWarnings = FALSE, recursive = TRUE)
+dir.create("result/table/Robj/aggr/", showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1, Input
+```{r input}
+memory.limit(size = 500000000)
+
+# read input data with "Read10X" function
+mouseNK.data <- Read10X(data.dir = "data/aggr_result/230315_mouseNK_v1/filtered_feature_bc_matrix/")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+mouseNK_data <- CreateSeuratObject(counts = mouseNK.data[["Gene Expression"]], project = "mouseNK", min.cells = 30, min.features = 200)
+mouseNK_data[["ADT"]] <- CreateAssayObject(counts = mouseNK.data[["Antibody Capture"]][,colnames(x = mouseNK_data)])
+```
+
+# 2, Add library names
+```{r add library names}
+gemgroup <- sapply(strsplit(colnames(mouseNK_data), split = "-"), "[[", 2)
+names(gemgroup) <- colnames(x = mouseNK_data)
+
+aggr_sheet <- read_csv("data/aggr_result/230315_mouseNK_v1/aggregation.csv") 
+aggr_sheet <- aggr_sheet %>% 
+  mutate(gemgroup = as.character(1:nrow(aggr_sheet))) %>% 
+  select(gemgroup, library_id)
+
+gemname <- data.frame(gemgroup) %>% 
+  left_join(aggr_sheet) %>% 
+  pull(library_id)
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = gemname, col.name = "gemname")
+
+# check samples
+mouseNK_data$gemname %>% unique()
+mouseNK_data@meta.data %>% select(gemname) %>% unique()
+
+# add gemname2
+Idents(mouseNK_data) <- mouseNK_data$gemname
+mouseNK_data$gemname2 <- Idents(mouseNK_data)
+```
+
+# 3, QC and filtering
+```{r QC and filtering}
+mouseNK_data[["percent.mt"]] <- PercentageFeatureSet(mouseNK_data, pattern = "^mt-")
+
+# Visualize QC metrics as a violin plot
+VlnPlot(mouseNK_data, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(mouseNK_data, features = "nFeature_RNA", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90, size = 12)) +
+  geom_hline(yintercept = 4000) + 
+  geom_hline(yintercept = 5000) + 
+  geom_hline(yintercept = 6000) +
+  geom_hline(yintercept = 7000) +
+  geom_hline(yintercept = 8000, colour = "red")
+
+VlnPlot(mouseNK_data, features = "nCount_RNA", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90, size = 12))
+
+VlnPlot(mouseNK_data, features = "percent.mt", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90, size = 12)) +
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10, colour = "red") + 
+  geom_hline(yintercept = 15)
+
+FeatureScatter(mouseNK_data, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "gemname2")  + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10, colour = "red") + 
+  geom_hline(yintercept = 15) +
+  theme(legend.position = "none")
+
+FeatureScatter(mouseNK_data, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "gemname2") + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10, colour = "red") + 
+  geom_hline(yintercept = 15) 
+
+# filtering
+summary(mouseNK_data$nFeature_RNA) %>% print()
+summary(mouseNK_data$percent.mt) %>% print()
+mouseNK_data <- subset(mouseNK_data, subset = nFeature_RNA > 200 & nFeature_RNA < 8000 & percent.mt < 10)
+```
+
+# 4, Normalization
+```{r normalization}
+mouseNK_data <- SCTransform(mouseNK_data, method = "glmGamPoi", vst.flavor = "v2", vars.to.regress = "percent.mt", verbose = FALSE)
+
+mouseNK_data <- NormalizeData(mouseNK_data, assay = "ADT", normalization.method = "CLR", margin = 2)
+mouseNK_data[['ADT']]@scale.data <- t(scale(t(as.matrix(mouseNK_data[['ADT']]@data))))
+mouseNK_data <- ScaleData(mouseNK_data, assay = "ADT")
+
+mouseNK_data <- NormalizeData(mouseNK_data, assay = "RNA", normalization.method = "LogNormalize", scale.factor = 10000)
+all.genes <- rownames(mouseNK_data)
+mouseNK_data <- ScaleData(mouseNK_data, features = all.genes, assay = "RNA")
+```
+
+# 5, Run PCA
+```{r run PCA}
+DefaultAssay(mouseNK_data) <- 'SCT'
+
+# remove mitochondrial and robosomal genes from variable genes
+print(Variablefeatureremove_mouse_genelst)
+mouseNK_data <- VariableFeatures_genelst(mouseNK_data, Variablefeatureremove_mouse_genelst)
+
+mouseNK_data <- PrepSCTFindMarkers(mouseNK_data)
+
+# Run PCA
+mouseNK_data <- RunPCA(mouseNK_data, npcs = 100, ndims.print = 1:5, nfeatures.print = 5)
+```
+
+# 6, Save
+```{r save}
+DefaultAssay(mouseNK_data) <- "SCT"
+saveRDS(mouseNK_data,file = "result/table/Robj/aggr/mouseNK_data_before_PCA_v1_withoutAggrNorm.rds")
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

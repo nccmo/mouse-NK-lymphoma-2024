@@ -1,0 +1,111 @@
+---
+title: "clustering_save_v2"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2022/7/25"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make directory}
+dir.create("result/table/aggr/Datafilt3/UMAP/KNN/", showWarnings = FALSE, recursive = TRUE)
+dir.create("result/pdf/aggr/Datafilt3/UMAP/KNN/",   showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1, Preparation
+```{r read data}
+memory.limit(size = 500000000)
+
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_before_PCA_v1_afterADT_withoutAggrNorm_other3660SP.rds")
+this_dataset <- "mouseNK_CITEdata"
+```
+
+# 2, Rename Ident
+```{r Ident rename}
+mouseNK_data@meta.data %>% head()
+Idents(mouseNK_data) %>% unique()
+
+Idents(mouseNK_data) <- mouseNK_data$gemname3
+```
+
+# 3, KNN clustering
+```{r clustering}
+NKmouse_rna_dimfilt3 <- 45
+NKmouse_resfilt3 <- 0.11
+
+mouseNK_data <- FindNeighbors(mouseNK_data, dims = 1:NKmouse_rna_dimfilt3)
+mouseNK_data <- RunUMAP(mouseNK_data, dims = 1:NKmouse_rna_dimfilt3)
+mouseNK_data <- FindClusters(mouseNK_data, resolution = NKmouse_resfilt3, algorithm = 3)
+
+DimPlot(mouseNK_data, reduction = "umap", group.by = "seurat_clusters")
+```
+
+# 4, Add disease_type2
+```{r disease_type2}
+NK_mouse_sample_lst <- read_tsv("sample/NK_mouse_sample_230314.txt")
+print(disease_type2_mNK_level)
+
+mouseNK_data@meta.data$seurat_clusters %>% unique
+
+setdiff(unique(mouseNK_data$gemname3), unique(NK_mouse_sample_lst$gemname3))
+setdiff(unique(NK_mouse_sample_lst$gemname3), unique(mouseNK_data$gemname3))
+
+mouseNK_data$gemname3 %>% unique()
+
+disease_type2_df <- mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = rownames(mouseNK_data@meta.data)) %>% 
+  left_join(NK_mouse_sample_lst) %>% 
+  select(cellbarcode2, disease_type2)
+
+rownames(disease_type2_df) <- disease_type2_df$cellbarcode2
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = disease_type2_df)
+mouseNK_data@meta.data %>% 
+  select(seurat_clusters, disease_type2) %>% unique()
+
+setdiff(mouseNK_data$disease_type2 %>% unique(), disease_type2_mNK_level)
+mouseNK_data$disease_type2 <- factor(mouseNK_data$disease_type2, levels = disease_type2_mNK_level)
+```
+
+# 5, Save
+```{r save}
+DefaultAssay(mouseNK_data) <- 'SCT'
+saveRDS(mouseNK_data, file = paste("result/table/Robj/aggr/mouseNK_data_RNAdim", NKmouse_rna_dimfilt3, "dim0", NKmouse_resfilt3 * 100, "_afterExclude_v1_other3660SP.rds", sep = ""))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

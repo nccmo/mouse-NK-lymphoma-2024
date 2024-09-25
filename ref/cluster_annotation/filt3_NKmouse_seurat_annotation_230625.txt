@@ -1,0 +1,33 @@
+seurat_clusters	annotationSeurat1	celltype1	celltype2
+0	NM05_B02	B_mature	B
+1	NM04_B01	B_immature	B
+2	NM01_T_NK01	T_NK	T_NK
+3	NM02_T_NK02	T_NK	T_NK
+4	M01_Tumor01	Tumor_LMPn	Tumor
+5	NM08_Myeloid01	Mono	Myeloid
+6	M06_Tumor06	Tumor_LMPp	Tumor
+7	M02_Tumor02	Tumor_LMPn	Tumor
+8	M03_Tumor03	Tumor_LMPn	Tumor
+9	NM03_T_NK03	T_NK	T_NK
+10	M04_Tumor04	Tumor_LMPn	Tumor
+11	NM10_Myeloid03	pDC	Myeloid
+12	M05_Tumor05	Tumor_LMPp	Tumor
+13	NM12_Myeloid05	cDC	Myeloid
+14	M07_Tumor07	Tumor_LMPp	Tumor
+15	NM09_Myeloid02	MDSC	Myeloid
+16	NM11_Myeloid04	Mac	Myeloid
+17	NM07_B04	B_Hsp70	B
+18	NM06_B03	PBL	B
+
+
+
+
+
+
+
+
+
+
+
+
+

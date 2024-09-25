@@ -1,0 +1,241 @@
+---
+title: "subclustering_T_NK"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/03/25"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+library(broom)
+library(ggrepel)
+library(presto)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/01_subclustering_T_NK/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/01_subclustering_T_NK/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/01_subclustering_T_NK/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load Seurat obj}
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_before_PCA_v1_afterADT_withoutAggrNorm_other3660SP.rds")
+this_dataset <- "mouseNK_CITEdata"
+```
+
+```{r load metadata}
+Annotation_metadata_filt1_df <- read_tsv("result/table/2023-08-29/4_Data_filt3/1_UMAP/3_1_clustering_determine_cellsubset/mouseNK_annotationSeurat1_metadata.txt")
+
+rownames(Annotation_metadata_filt1_df) <- Annotation_metadata_filt1_df$cellbarcode2
+
+Annotation_metadata_filt1_df$cellbarcode2 %>% length()
+```
+
+```{r combine metadata}
+Annotation_metadata_filt1_df %>% colnames()
+mouseNK_data@meta.data %>% colnames()
+
+setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))
+
+unique(c("cellbarcode2", setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))))
+
+annotation_df <- Annotation_metadata_filt1_df %>% 
+  select(
+    unique(c("cellbarcode2", setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))))
+  ) %>% 
+  as.data.frame()
+rownames(annotation_df) <- annotation_df$cellbarcode2
+annotation_df %>% head()
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = annotation_df)
+
+mouseNK_data$annotationSeurat1 <- factor(mouseNK_data$annotationSeurat1,
+                                         levels = annotationSeurat1_NKmouse_filt2_level)
+
+mouseNK_data$celltype1 <- factor(mouseNK_data$celltype1, levels = celltype1_NKmouse_filt2_level)
+mouseNK_data$celltype2 <- factor(mouseNK_data$celltype2, levels = celltype2_NKmouse_filt2_level)
+```
+
+# 2. T/NK subset
+```{r subset}
+Idents(mouseNK_data) <- mouseNK_data$celltype1
+Idents(mouseNK_data) %>% unique()
+
+mouseNK_subdata <- subset(x = mouseNK_data, idents = "T_NK")
+
+DefaultAssay(mouseNK_subdata) <- 'SCT'
+```
+
+```{r subset SCT PCA}
+mouseNK_subdata <- SCTransform(mouseNK_subdata, 
+                               vst.flavor = "v2", 
+                               vars.to.regress = "percent.mt", 
+                               verbose = TRUE, conserve.memory = TRUE)
+
+DefaultAssay(mouseNK_subdata) <- "SCT"
+
+Variablefeatureremove_mouse_genelst
+VariableFeatures(mouseNK_subdata) <- VariableFeatures(mouseNK_subdata)[!str_detect(VariableFeatures(mouseNK_subdata),
+                                                                                   paste(Variablefeatureremove_mouse_genelst, collapse = "|"))]
+
+mouseNK_subdata <- RunPCA(mouseNK_subdata, npcs = 100, ndims.print = 1:5, nfeatures.print = 5)
+
+DefaultAssay(mouseNK_subdata) <- 'SCT'
+```
+
+# 3. Sub-clustering
+
+- knowledge-based genes
+```{r load gene sets}
+known_genes <- read_tsv("ref/cluster_ref_genes/genes_for_bubbleplot_celltype4.txt")
+known_genes_included <- known_genes$gene[known_genes$gene %in% rownames(mouseNK_subdata[["SCT"]])]
+```
+
+```{r Sub-clustering}
+# KNN clustering
+dim <- 30
+res <- 0.5
+
+mouseNK_subdata <- FindNeighbors(mouseNK_subdata, dims = 1:dim)
+mouseNK_subdata <- RunUMAP(mouseNK_subdata, dims = 1:dim)
+mouseNK_subdata <- FindClusters(mouseNK_subdata, resolution = res, algorithm = 3)
+
+# UMAP seurat clusters
+p1 <- DimPlot(mouseNK_subdata, reduction = 'umap', 
+        label = TRUE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p2 <- DimPlot(mouseNK_subdata, reduction = 'umap', group.by = "gemname3",
+        label = FALSE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p3 <- DimPlot(mouseNK_subdata, reduction = 'umap', group.by = "disease_type2",
+        label = FALSE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p5 <- VlnPlot(mouseNK_subdata, 
+              features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+              ncol = 3, pt.size = 0)
+
+pdf(str_glue("{outdir_pdf}/UMAP_T_NK_subcluster_notAnnotated_dim{dim}res00{res*100}.pdf"))
+print(p1)
+print(p1 + NoLegend())
+print(p2)
+print(p2 + NoLegend())
+print(p3)
+print(p3 + NoLegend())
+print(p5)
+dev.off()
+
+# UMAP gene markers
+pdf(str_glue("{outdir_pdf}/UMAP_T_NK_subcluster_known_genes_dim{dim}.pdf"))
+for (i in 1:length(known_genes_included)) {
+  # i <- 19
+  this_gene <- known_genes_included[i]
+  p <- FeaturePlot(mouseNK_subdata, features = this_gene, 
+                   raster = TRUE, pt.size = 2.5, raster.dpi = c(600, 600))
+  print(p)
+}
+dev.off()
+```
+
+# 4, Add annotation
+```{r add annotation}
+df_cluster_annot <- read_tsv("ref/cluster_annotation/REV_cluster_annotation_T_NK_dim30_res050_240325.txt")
+
+tmp_metadata <- mouseNK_subdata@meta.data %>% 
+    mutate(seurat_clusters = as.numeric(as.character(seurat_clusters))) %>% 
+    left_join(df_cluster_annot, by = "seurat_clusters") %>% 
+    dplyr::select(T_NK_subcluster, celltype_T_NK)
+rownames(tmp_metadata) <- rownames(mouseNK_subdata@meta.data)
+
+mouseNK_subdata <- AddMetaData(object = mouseNK_subdata, metadata = tmp_metadata)
+  
+mouseNK_subdata@meta.data$T_NK_subcluster <- factor(mouseNK_subdata@meta.data$T_NK_subcluster, 
+                                                    levels = unique(df_cluster_annot$T_NK_subcluster))
+mouseNK_subdata@meta.data$celltype_T_NK <- factor(mouseNK_subdata@meta.data$celltype_T_NK, 
+                                                  levels = unique(df_cluster_annot$celltype_T_NK))
+```
+
+# 5. Save
+```{r save UMAP}
+fig1 <- DimPlot(mouseNK_subdata, reduction = 'umap', 
+               group.by = "T_NK_subcluster",
+               label = FALSE, repel = TRUE, 
+               raster = TRUE, pt.size = 1.5, raster.dpi = c(600, 600)) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+fig2 <- DimPlot(mouseNK_subdata, reduction = 'umap', 
+               group.by = "celltype_T_NK",
+               label = FALSE, repel = TRUE,
+               raster = TRUE, pt.size = 1.5, raster.dpi = c(600, 600)) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+pdf(str_glue("{outdir_pdf}/UMAP_T_NK_subcluster_Annotated_dim{dim}res00{res*100}_raster.pdf"))
+print(fig1)
+print(fig1 + NoLegend())
+print(fig2)
+print(fig2 + NoLegend())
+dev.off()
+```
+
+```{r save data}
+DefaultAssay(mouseNK_subdata) <- "SCT"
+
+saveRDS(mouseNK_subdata, str_glue("{outdir_Robj}/mouseNK_subdata_T_NK_after_annotation_dim{dim}res00{res*100}.rds"))
+
+mouseNK_subdata@meta.data %>%
+  as_tibble() %>% 
+  write_tsv(str_glue("{outdir_table}/metadata_mouseNK_subdata_T_NK_after_annotation_dim{dim}res00{res*100}.txt"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

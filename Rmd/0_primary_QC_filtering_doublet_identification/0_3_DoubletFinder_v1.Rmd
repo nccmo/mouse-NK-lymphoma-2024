@@ -1,0 +1,116 @@
+---
+title: "DoubletFinder_v1"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2021/4/30"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+```
+
+```{r setup single cell}
+library(Seurat)
+library(Matrix)
+library(DoubletFinder)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make directory}
+dir.create("result/table/aggr/Dataorigninal/Exclusion_cellbarcode/", showWarnings = FALSE, recursive = TRUE)
+dir.create("result/pdf/aggr/Dataorigninal/Exclusion_cellbarcode/",   showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1, Preparation
+```{r read in input data}
+memory.limit(size = 500000000)
+
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_before_PCA_v1_withoutAggrNorm.rds")
+this_dataset <- "mouseNK_CITEdata"
+
+dim_value <- 55
+```
+
+# 2, Run DoubletFinder
+```{r run DoubletFinder}
+gemname2_level <- mouseNK_data$gemname2 %>% unique()
+
+doublet_df <- tibble()
+
+for (this_gemname in gemname2_level) {
+  print(this_gemname)
+  
+  mouseNK_subdata <- subset(mouseNK_data, subset = gemname2 == this_gemname)
+  this_totalcellnumber <- mouseNK_subdata@meta.data %>% nrow()
+  this_007cellnumber <- round(this_totalcellnumber * 0.03, digits = 0)
+  
+  ## pK Identification (no ground-truth) ---------------------------------------------------------------------------------------
+  sweep.res.list_pdl1pdl2mouse <- paramSweep_v3(mouseNK_subdata, PCs = 1:dim_value, sct = TRUE)
+  sweep.stats_pdl1pdl2mouse <- summarizeSweep(sweep.res.list_pdl1pdl2mouse, GT = FALSE)
+  sweep.stats_pdl1pdl2mouse %>% head()
+  
+  bcmvn_pdl1pdl2mouse <- find.pK(sweep.stats_pdl1pdl2mouse)
+  bcmvn_pdl1pdl2mouse %>% head()
+  
+  ## Homotypic Doublet Proportion Estimate -------------------------------------------------------------------------------------
+  homotypic.prop <- modelHomotypic(mouseNK_subdata@meta.data$seurat_clusters)
+  nExp_poi <- round(0.03*nrow(mouseNK_subdata@meta.data))
+  nExp_poi.adj <- round(nExp_poi*(1 - homotypic.prop))
+  
+  ## Run DoubletFinder with varying classification stringencies ----------------------------------------------------------------
+  mouseNK_subdata <- doubletFinder_v3(mouseNK_subdata, PCs = 1:dim_value, pN = 0.25, pK = 0.09, nExp = nExp_poi, reuse.pANN = FALSE, sct = TRUE)
+  mouseNK_subdata <- doubletFinder_v3(mouseNK_subdata, PCs = 1:dim_value, pN = 0.25, pK = 0.09, nExp = nExp_poi.adj, reuse.pANN = paste("pANN_0.25_0.09_", this_007cellnumber, sep = ""), sct = TRUE)
+  
+  fig <- DimPlot(mouseNK_subdata, reduction = "umap", group.by = paste("DF.classifications_0.25_0.09_", this_007cellnumber, sep = ""))
+  print(fig)
+  ggsave(paste("result/pdf/aggr/Dataorigninal/Exclusion_cellbarcode/doubletcells_onUMAP_test_0.25_0.09_", this_007cellnumber, "_", this_gemname, "_withoutAggrNorm.png", sep = ""), width = 5, height = 5)
+  
+  doublet_tmp <- mouseNK_subdata@meta.data[mouseNK_subdata@meta.data %>% pull(paste("DF.classifications_0.25_0.09_", this_007cellnumber, sep = "")) == "Doublet", ]
+  doublet_tmp <- doublet_tmp %>% 
+    mutate(cell_barcode = rownames(doublet_tmp))
+  doublet_tmp2 <- doublet_tmp %>% 
+    select(cell_barcode, gemname, seurat_clusters)
+  
+  doublet_df <- doublet_df %>% 
+    rbind(doublet_tmp2)
+}
+```
+
+# save the result
+```{r save}
+doublet_df %>% 
+  select(cell_barcode, gemname, seurat_clusters) %>% 
+  write_tsv(paste("result/table/aggr/Dataorigninal/Exclusion_cellbarcode/Doubletcells_DoubletFinder_0.25_0.09_0070_cellbarcode_eachsample_dim", dim_value, "_withoutAggrNorm.txt", sep = ""))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

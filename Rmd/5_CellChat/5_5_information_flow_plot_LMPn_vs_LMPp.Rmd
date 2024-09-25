@@ -1,0 +1,116 @@
+---
+title: "information_flow_plot_LMPn_vs_LMPp"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(readxl)
+library(RColorBrewer)
+library(cowplot)
+theme_set(theme_cowplot())
+library(CellChat)
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/06_information_flow_plot_LMPn_vs_LMPp/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/06_information_flow_plot_LMPn_vs_LMPp/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/06_information_flow_plot_LMPn_vs_LMPp/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load and merge CellChat}
+cellchat_LMPn <- readRDS("result/REVISION/2023-08-29/4_Data_filt3/14_CellInteraction/04_CellChat_LMPn/rds/mouseNK_data_cellchat_LMPn.rds")
+cellchat_LMPp <- readRDS("result/REVISION/2023-08-29/4_Data_filt3/14_CellInteraction/05_CellChat_LMPp/rds/mouseNK_data_cellchat_LMPp.rds")
+
+object_list <- list(LMPn = cellchat_LMPn, LMPp = cellchat_LMPp)
+cellchat <- mergeCellChat(object_list, add.names = names(object_list))
+```
+
+# 2. Identify and visualize the conserved and context-specific signaling pathways
+
+## Compare the overall information flow of each signaling pathway
+```{r make df}
+vec_LMPn <- apply(cellchat@netP[["LMPn"]]$prob, 3, sum)
+df_LMPn <- vec_LMPn %>% 
+  as_tibble() %>% 
+  mutate(pathway_name = names(vec_LMPn)) %>% 
+  rename("LMPn" = value)
+
+vec_LMPp <- apply(cellchat@netP[["LMPp"]]$prob, 3, sum)
+df_LMPp <- vec_LMPp %>% 
+  as_tibble() %>% 
+  mutate(pathway_name = names(vec_LMPp)) %>% 
+  rename("LMPp" = value)
+
+df_merge <- df_LMPn %>% 
+  full_join(df_LMPp) %>% 
+  mutate(LMPn = if_else(is.na(LMPn), 0, LMPn),
+         LMPp = if_else(is.na(LMPp), 0, LMPp)) %>% 
+  pivot_longer(cols = -pathway_name, names_to = "micetype", values_to = "information_flow")
+
+pathway_order <- df_merge %>% 
+  pivot_wider(names_from = micetype, values_from = information_flow) %>% 
+  mutate(ratio = LMPn / LMPp) %>% 
+  arrange(ratio) %>% 
+  pull(pathway_name)
+
+df_merge$pathway_name <- factor(df_merge$pathway_name, pathway_order)
+df_merge$micetype <- factor(df_merge$micetype, c("LMPp", "LMPn"))
+```
+
+```{r filter pathway}
+df_merge_pval_filt <- df_merge_pval %>% 
+  pivot_wider(names_from = micetype, values_from = information_flow) %>% 
+  filter(LMPn >= 0.1 & LMPp >= 0.1) %>% 
+  pivot_longer(cols = c(LMPn, LMPp)) %>% 
+  rename("micetype" = name,
+         "information_flow" = value)
+
+df_merge_pval_filt$micetype <- factor(df_merge_pval_filt$micetype, levels = c("LMPp", "LMPn"))
+```
+
+```{r bar plot filt}
+barplot_fill <- df_merge_pval_filt %>% 
+  ggplot(aes(x = pathway_name, y = information_flow, fill = micetype)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.75) +
+  xlab("") +
+  ylab("Relative information flow") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(legend.title  = element_blank()) +
+  coord_flip() +
+  guides(fill = guide_legend(reverse = TRUE))
+
+barplot_fill
+ggsave(str_glue("{outdir_pdf}/FigS6e_Barplot_information_flow_LMPn_mice_vs_LMPp_mice_All_filt010_relative.pdf"))
+```
+
+```{r}
+sessionInfo()
+```

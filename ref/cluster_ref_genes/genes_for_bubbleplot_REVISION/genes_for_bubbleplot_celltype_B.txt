@@ -1,0 +1,16 @@
+gene
+Fyn
+Satb1
+Pde3b
+Cd86
+Cr2
+Bcl11a
+Ikzf1
+Cd38
+Bcl2
+Xbp1
+Slamf7
+Irf4
+Prdm1
+Tnfrsf17
+Cd44

@@ -1,0 +1,244 @@
+---
+title: "GSEA_BubblePlot_Pre_vs_Trp53tumor"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+library(broom)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/6_PathwayHeatmap/01_GSEA_BubblePlot_Pre_vs_Trp53tumor/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/6_PathwayHeatmap/01_GSEA_BubblePlot_Pre_vs_Trp53tumor/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/6_PathwayHeatmap/01_GSEA_BubblePlot_Pre_vs_Trp53tumor/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load GSEA result}
+GSEA_result_genes_df <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/5_Pathway/01_GSEA_Pre_vs_Trp53tumor/table/df_GSEA_pre_vs_LMPnTumor_celltype_overall_detail_with_genenames.txt.txt")
+
+GSEA_result_genes_df$celltype_overall_detail <- factor(GSEA_result_genes_df$celltype_overall_detail,
+                                                       levels = c("CD4T_N", 
+                                                                  "CD8T_N", "CD8T_CM",
+                                                                  "B_Immature", "B_Mature", "Plasmablast",
+                                                                  "Mono", "cDC1", "cDC2", "mregDC", "MDSC",
+                                                                  "NK"))
+```
+
+**ES>=0.4, qvalue<0.1**
+
+```{r filter GSEA result}
+GSEA_result_genes_Escore04_qvalue_df <- GSEA_result_genes_df %>% 
+  filter(abs(enrichmentScore) >= 0.4) %>% 
+  filter(qvalue < 0.1) %>% 
+  group_by(celltype_overall_detail, micetype)
+
+GSEA_result_genes_Escore04_qvaluetop10_df <- GSEA_result_genes_df %>% 
+  filter(abs(enrichmentScore) >= 0.4) %>% 
+  filter(qvalue < 0.1) %>% 
+  group_by(celltype_overall_detail, micetype) %>% 
+  top_n(n = 10, wt = -qvalue) %>% 
+  top_n(n = 10, wt = abs(NES))
+
+GSEA_result_genes_Escore04_qvaluetop10_df %>% dim()
+
+GSEA_result_genes_Escore04_qvaluetop10_df %>% 
+  write_tsv(str_glue("{outdir_table}/df_GSEA_pre_vs_LMPnTumor_celltype_overall_detail_ES040_qval010_Top10.txt"))
+```
+
+```{r table for manuscript}
+df <- GSEA_result_genes_df %>% 
+  filter(micetype == "Trp53-/- tumor") %>% 
+  filter(qvalue < 0.1) %>% 
+  mutate(Comparison = "WT + Trp53-/- pre vs Trp53-/- tumor",
+         `Tumor type` = case_when(enrichmentScore < 0 ~ "WT + Trp53-/- pre",
+                                  enrichmentScore > 0 ~ "Trp53-/- tumor"),
+         `Tag %` = str_split(leading_edge, ", ", simplify = TRUE)[ , 1],
+         `List %` = str_split(leading_edge, ", ", simplify = TRUE)[ , 2],
+         `Signal %` = str_split(leading_edge, ", ", simplify = TRUE)[ , 3]) %>% 
+  mutate(`Tag %` = as.numeric(str_extract(`Tag %`, pattern = "[0-9]+")) / 100,
+         `List %` = as.numeric(str_extract(`List %`, pattern = "[0-9]+")) / 100,
+         `Signal %` = as.numeric(str_extract(`Signal %`, pattern = "[0-9]+")) / 100) %>% 
+  dplyr::rename("Cell cluster" = celltype_overall_detail,
+                "Genesets" = Description,
+                "SIZE" = setSize,
+                "ES" = enrichmentScore,
+                "NOM p-val" = pvalue,
+                "FDR q-val" = qvalue,
+                "FWER p-val" = p.adjust) %>% 
+  dplyr::select(`Cell cluster`, `Comparison`, `Tumor type`, Genesets, 
+                SIZE, ES, NES, `NOM p-val`, `FDR q-val`, `FWER p-val`,
+                `Tag %`, `List %`, `Signal %`) %>% 
+  arrange(`Tumor type`)
+
+df %>% 
+  write_tsv(str_glue("{outdir_table}/df_GSEA_for_suppl_pre_vs_LMPn_qval01.txt"))
+```
+
+# Myeloid
+```{r}
+GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid <- GSEA_result_genes_Escore04_qvaluetop10_df %>% 
+  # filter(celltype_overall_detail %in% c("Mono", "Macro", "cDC1", "cDC2", "pDC", "mregDC", "MDSC"))
+  filter(celltype_overall_detail %in% c("Mono", "cDC1", "cDC2", "MDSC"))
+
+GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  ungroup() %>% 
+  filter(micetype == "Trp53-/- tumor") %>% 
+  write_tsv(str_glue("{outdir_table}/GSEA_pre_vs_LMPnTumor_result_genes_Escore04_qvalue_more1_myeloid.txt"))
+
+GSEA_result_genes_Escore04_qvaluetop10_more2_pos_df_myeloid <- GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  ungroup() %>% 
+  filter(micetype == "Trp53-/- tumor") %>% 
+  filter(NES > 0) %>% 
+  dplyr::count(Description) %>% 
+  filter(n >= 2)
+
+GSEA_result_genes_Escore04_qvaluetop10_more2_neg_df_myeloid <- GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  ungroup() %>% 
+  filter(micetype == "Trp53-/- tumor") %>% 
+  filter(NES < 0) %>% 
+  dplyr::count(Description) %>% 
+  filter(n >= 2)
+
+GSEA_result_genes_Escore04_qvaluetop10_more2_df_myeloid <- rbind(
+  GSEA_result_genes_Escore04_qvaluetop10_more2_pos_df_myeloid,
+  GSEA_result_genes_Escore04_qvaluetop10_more2_neg_df_myeloid
+)
+
+GSEA_result_genes_Escore04_qvaluetop10_more2_df_myeloid %>% 
+  write_tsv(str_glue("{outdir_table}/GSEA_pre_vs_LMPnTumor_result_genes_Escore04_qvalue_more2_myeloid.txt"))
+
+GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid <- GSEA_result_genes_df %>% 
+  filter(micetype == "Trp53-/- tumor") %>% 
+  filter(Description %in% unique(GSEA_result_genes_Escore04_qvaluetop10_more2_df_myeloid$Description)) %>% 
+  # filter(celltype_overall_detail %in% c("Mono", "Macro", "cDC1", "cDC2", "pDC", "mregDC", "MDSC"))
+  filter(celltype_overall_detail %in% c("Mono", "cDC1", "cDC2", "MDSC"))
+
+levels_myeloid <- GSEA_result_genes_Escore04_qvaluetop10_more2_df_myeloid %>% 
+  arrange(Description) %>% 
+  pull(Description) %>% 
+  unique()
+
+GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid$Description <- factor(
+  GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid$Description,
+  levels = rev(levels_myeloid)
+)
+
+GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid <- GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  arrange(Description)
+```
+
+```{r}
+S1 <- GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  mutate(Description = str_replace_all(Description, pattern = "_", replacement = " ")) %>% 
+  ggplot(aes(x = celltype_overall_detail, y = Description, 
+             size = -log10(qvalue), 
+             color = NES, 
+             group = celltype_overall_detail)) + 
+  labs(title = "[Myeloid] pre vs LMPn tumor") + 
+  geom_point(alpha = 0.8) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) + 
+  theme_classic()
+
+S1 <- S1 + 
+  scale_color_gradient2(low  = "mediumblue",
+                        mid  = "white",
+                        high = "red2",
+                        limits = c(min(GSEA_result_genes_Escore04_qvalue_df$NES), 
+                                   max(GSEA_result_genes_Escore04_qvalue_df$NES)),
+                        midpoint = 0) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15)) +
+  scale_size(range = c(2, 8))
+
+pdf(str_glue("{outdir_pdf}/plot_bubble_GESA_pre_vs_LMPn_Myeloid.pdf"), width = 7, height = 6)
+S1
+dev.off()
+```
+
+```{r}
+S1 <- GSEA_result_genes_Escore04_qvaluetop10_df_select_myeloid %>% 
+  filter(Description != "HALLMARK_TNFA_SIGNALING_VIA_NFKB") %>% 
+  mutate(Description = str_replace_all(Description, pattern = "_", replacement = " ")) %>% 
+  ggplot(aes(x = celltype_overall_detail, y = Description, 
+             size = -log10(qvalue), 
+             color = NES, 
+             group = celltype_overall_detail)) + 
+  labs(title = "[Myeloid] pre vs LMPn tumor") + 
+  geom_point(alpha = 0.8) +
+  scale_y_discrete(labels = function(x) str_wrap(x, width = 35)) + 
+  theme_classic()
+
+S1 <- S1 + 
+  scale_color_gradient2(low  = "mediumblue",
+                        mid  = "white",
+                        high = "red2",
+                        limits = c(min(GSEA_result_genes_Escore04_qvalue_df$NES), 
+                                   max(GSEA_result_genes_Escore04_qvalue_df$NES)),
+                        midpoint = 0) +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 15),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(size = 10),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 15)) +
+  scale_size(range = c(2, 8))
+
+pdf(str_glue("{outdir_pdf}/Fig5c_plot_bubble_GESA_pre_vs_LMPn_Myeloid_only_pos.pdf"), width = 7, height = 6)
+S1
+dev.off()
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

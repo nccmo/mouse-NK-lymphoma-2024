@@ -1,0 +1,8 @@
+seurat_clusters	Myeloid_subcluster	celltype_Myeloid
+0	Mono	Mono
+6	Macro	Macro
+3	cDC1	cDC1
+1	cDC2	cDC2
+2	pDC	pDC
+5	mregDC	mregDC
+4	MDSC	MDSC

@@ -1,0 +1,434 @@
+---
+title: "Roe_Myeloid"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/08"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(epitools)
+library(ComplexHeatmap)
+library(circlize)
+library(cowplot)
+theme_set(theme_cowplot())
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/20_Roe_Myeloid/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/20_Roe_Myeloid/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/20_Roe_Myeloid/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load metadata}
+df_meta_overall <- read_tsv("result/table/2023-08-29/4_Data_filt3/1_UMAP/3_1_clustering_determine_cellsubset/mouseNK_annotationSeurat1_metadata.txt")
+df_meta_Myeloid <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/3_reclutser/9_Reannotation/05_subclustering_Myeloid/table/metadata_mouseNK_subdata_Myeloid_after_annotation_dim25res008.txt")
+```
+
+```{r merge metadata}
+tmp_df <- df_meta_Myeloid %>% 
+  dplyr::select(cellbarcode2, celltype_Myeloid)
+
+df_meta_merge <- df_meta_overall %>% 
+  left_join(tmp_df, by = "cellbarcode2") %>% 
+  dplyr::select(cellbarcode2, gemname3, disease_type, disease_type2, celltype1, celltype_Myeloid)
+```
+
+```{r add diseasetype}
+df_meta_for_Roe <- df_meta_merge %>% 
+  mutate(
+    disease_type_edit = case_when(
+      disease_type %in% c("mNK_SG", "mNK_Tu") ~ "SG/Other",
+      disease_type == "mNK_SP"                ~ "SP"
+    ),
+    disease_type2_edit = case_when(
+      disease_type2 %in% c("CreN_pre", "CreP_pre") ~ "Pre-tumor",
+      disease_type2 == "CreP_Tumor"                ~ "Trp53-/- tumor",
+      disease_type2 == "CreLMP1P_Tumor"            ~ "Trp53-/- LMP1+ tumor"
+    ),
+    celltype_for_freq = case_when(
+      celltype1 %in% c("Tumor_LMPn", "Tumor_LMPp")                             ~ "Malignant",
+      !celltype1 %in% c("Tumor_LMPn", "Tumor_LMPp") & is.na(celltype_Myeloid)  ~ "Other_nonmalignant",
+      !celltype1 %in% c("Tumor_LMPn", "Tumor_LMPp") & !is.na(celltype_Myeloid) ~ celltype_Myeloid
+    )
+  ) %>% 
+  mutate(
+    disease_type = fct_relevel(disease_type, c("mNK_SP", "mNK_SG", "mNK_Tu")),
+    disease_type_edit = fct_relevel(disease_type_edit, c("SG/Other", "SP")),
+    disease_type2 = fct_relevel(disease_type2, c("CreN_pre", "CreP_pre", "CreP_Tumor", "CreLMP1P_Tumor")),
+    disease_type2_edit = fct_relevel(disease_type2_edit, c("Pre-tumor", "Trp53-/- tumor", "Trp53-/- LMP1+ tumor"))
+  )
+```
+
+```{r load annot}
+df_annot <- read_tsv("ref/cluster_annotation/REV_cluster_annotation_Myeloid_dim25_res008_240326.txt")
+fct_annot <- unique(df_annot$celltype_Myeloid)
+
+df_meta_for_Roe <- df_meta_for_Roe %>% 
+  mutate(celltype_Myeloid = fct_relevel(celltype_Myeloid, fct_annot))
+```
+
+# 2. Ro/e
+
+## 2-1. Overall
+
+```{r plot Ro/e}
+celltype_axis <- c("celltype_Myeloid")
+diseasetype_axis <- c("disease_type_edit")
+
+for (i in 1:length(celltype_axis)) {
+  for (j in 1:length(diseasetype_axis)) {
+    # i <- 1
+    # j <- 1
+    this_celltype_axis <- celltype_axis[i]
+    this_diseasetype_axis <- diseasetype_axis[j]
+    print(paste(this_celltype_axis, this_diseasetype_axis, sep = ", "))
+    
+    this_df_for_freq0 <- df_meta_for_Roe %>% 
+      filter(celltype_for_freq != "Malignant") %>% 
+      dplyr::count(get(this_celltype_axis), get(this_diseasetype_axis))
+    
+    this_df_for_freq_wide <- this_df_for_freq0 %>% 
+      pivot_wider(names_from = `get(this_celltype_axis)`, 
+                  values_from = n)
+    this_df_for_freq_wide[is.na(this_df_for_freq_wide)] <- 0
+    
+    this_mat_for_Roe <- this_df_for_freq_wide %>% 
+      dplyr::select(-`get(this_diseasetype_axis)`) %>% 
+      as.matrix()
+    rownames(this_mat_for_Roe) <- this_df_for_freq_wide$`get(this_diseasetype_axis)`
+    
+    this_mat_for_Roe_exp <- expected(this_mat_for_Roe)
+    
+    this_mat_for_Roe_diff <- this_mat_for_Roe / this_mat_for_Roe_exp
+    
+    # save matrix
+    this_mat_for_Roe %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_obs_{this_celltype_axis}_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_exp %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_exp_{this_celltype_axis}_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_diff %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_diff_{this_celltype_axis}_by_{this_diseasetype_axis}.txt"))
+    
+    # binomial test
+    this_vec_for_Roe <- as.vector(this_mat_for_Roe)
+    this_vec_for_Roe_prob <- as.vector(this_mat_for_Roe_exp) / sum(this_vec_for_Roe)
+    this_trials <- sum(this_vec_for_Roe)
+    
+    this_vec_for_Roe_binom <- vector()
+    for (k in 1:length(this_vec_for_Roe)) {
+      # k <- 1
+      this_res_binom <- binom.test(x = this_vec_for_Roe[k], 
+                                   n = this_trials, 
+                                   p = this_vec_for_Roe_prob[k])
+      this_vec_for_Roe_binom[k] <- this_res_binom$p.value
+    }
+    
+    this_mat_for_Roe_binom_pval <- this_vec_for_Roe_binom
+    dim(this_mat_for_Roe_binom_pval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_pval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_pval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_by_{this_diseasetype_axis}_binom_pval.txt"))
+    
+    this_mat_for_Roe_binom_qval <- p.adjust(this_mat_for_Roe_binom_pval, method = "BH")
+    dim(this_mat_for_Roe_binom_qval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_qval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_qval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_by_{this_diseasetype_axis}_binom_qval.txt"))
+    
+    # matrix for Heatmap
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 3] <- "+++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 2 & this_mat_for_Roe_diff < 3] <- "++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 1.5 & this_mat_for_Roe_diff < 2] <- "+"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0.67 & this_mat_for_Roe_diff < 1.5] <- "+-"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0 & this_mat_for_Roe_diff < 0.67] <- "-"
+    
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff2[, colnames(this_mat_for_Roe_diff2) != "NA"]
+    
+    colors_fill <- c("darkslategray1", "orange1", "cornsilk", "red")
+    names(colors_fill) <- c("-", "+", "+-", "++")
+    
+    # Heatmap
+    fig <- Heatmap(this_mat_for_Roe_diff2, name = "mat", 
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   col = colors_fill,
+                   show_heatmap_legend = FALSE,
+                   cell_fun = function(j, i, x, y, width, height, fill) {
+                     grid.text(this_mat_for_Roe_diff2[i, j], x, y, gp = gpar(fontsize = 20))
+                   },
+                   width = ncol(this_mat_for_Roe_diff2) * unit(20, "mm"), 
+                   height = nrow(this_mat_for_Roe_diff2) * unit(20, "mm"),
+                   rect_gp = gpar(lwd = 1.5))
+    
+    pdf(str_glue("{outdir_pdf}/Fig5b_Roe_{this_celltype_axis}_by_{this_diseasetype_axis}.pdf"))
+    print(fig)
+    dev.off()
+  }
+}
+```
+
+## 2-2. SG/Other
+
+```{r plot Ro/e SG/Other}
+df_meta_for_Roe_SG_Other <- df_meta_for_Roe %>% 
+  filter(disease_type_edit == "SG/Other")
+
+celltype_axis <- c("celltype_Myeloid")
+diseasetype_axis <- c("disease_type2_edit")
+
+for (i in 1:length(celltype_axis)) {
+  # i <- 1
+  this_celltype_axis <- celltype_axis[i]
+  
+  for (j in 1:length(diseasetype_axis)) {
+    # j <- 2
+    this_diseasetype_axis <- diseasetype_axis[j]
+    print(paste(this_celltype_axis, this_diseasetype_axis, sep = ", "))
+    
+    this_df_for_freq0 <- df_meta_for_Roe_SG_Other %>% 
+      filter(celltype_for_freq != "Malignant") %>% 
+      dplyr::count(get(this_celltype_axis), get(this_diseasetype_axis))
+    
+    this_df_for_freq_wide <- this_df_for_freq0 %>% 
+      pivot_wider(names_from = `get(this_celltype_axis)`, 
+                  values_from = n)
+    this_df_for_freq_wide[is.na(this_df_for_freq_wide)] <- 0
+    
+    this_mat_for_Roe <- this_df_for_freq_wide %>% 
+      dplyr::select(-`get(this_diseasetype_axis)`) %>% 
+      as.matrix()
+    rownames(this_mat_for_Roe) <- this_df_for_freq_wide$`get(this_diseasetype_axis)`
+    
+    this_mat_for_Roe_exp <- expected(this_mat_for_Roe)
+    
+    this_mat_for_Roe_diff <- this_mat_for_Roe / this_mat_for_Roe_exp
+    
+    # save matrix
+    this_mat_for_Roe %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_obs_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_exp %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_exp_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_diff %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_diff_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}.txt"))
+    
+    # binomial test
+    this_vec_for_Roe <- as.vector(this_mat_for_Roe)
+    this_vec_for_Roe_prob <- as.vector(this_mat_for_Roe_exp) / sum(this_vec_for_Roe)
+    this_trials <- sum(this_vec_for_Roe)
+    
+    this_vec_for_Roe_binom <- vector()
+    for (k in 1:length(this_vec_for_Roe)) {
+      # k <- 1
+      this_res_binom <- binom.test(x = this_vec_for_Roe[k], 
+                                   n = this_trials, 
+                                   p = this_vec_for_Roe_prob[k])
+      this_vec_for_Roe_binom[k] <- this_res_binom$p.value
+    }
+    
+    this_mat_for_Roe_binom_pval <- this_vec_for_Roe_binom
+    dim(this_mat_for_Roe_binom_pval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_pval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_pval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}_binom_pval.txt"))
+    
+    this_mat_for_Roe_binom_qval <- p.adjust(this_mat_for_Roe_binom_pval, method = "BH")
+    dim(this_mat_for_Roe_binom_qval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_qval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_qval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}_binom_qval.txt"))
+    
+    # matrix for Heatmap
+    this_mat_for_Roe_diff[, c("MDSC")] <- NA
+    
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 3] <- "+++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 2 & this_mat_for_Roe_diff < 3] <- "++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 1.5 & this_mat_for_Roe_diff < 2] <- "+"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0.67 & this_mat_for_Roe_diff < 1.5] <- "+-"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0 & this_mat_for_Roe_diff < 0.67] <- "-"
+    this_mat_for_Roe_diff2[is.na(this_mat_for_Roe_diff2)] <- ""
+    
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff2[, colnames(this_mat_for_Roe_diff2) != "NA"]
+    
+    colors_fill <- c("gray95", "darkslategray1", "orange1", "cornsilk", "red", "red3")
+    
+    # Heatmap
+    fig <- Heatmap(this_mat_for_Roe_diff2, name = "mat", 
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   col = colors_fill,
+                   show_heatmap_legend = FALSE,
+                   cell_fun = function(j, i, x, y, width, height, fill) {
+                     grid.text(this_mat_for_Roe_diff2[i, j], x, y, gp = gpar(fontsize = 20))
+                   },
+                   width = ncol(this_mat_for_Roe_diff2) * unit(20, "mm"), 
+                   height = nrow(this_mat_for_Roe_diff2) * unit(20, "mm"),
+                   rect_gp = gpar(lwd = 1.5))
+    
+    pdf(str_glue("{outdir_pdf}/Fig5b_Roe_{this_celltype_axis}_SG_Other_by_{this_diseasetype_axis}.pdf"), width = 8)
+    print(fig)
+    dev.off()
+  }
+}
+```
+
+## 2-3. SP
+
+```{r plot Ro/e SP}
+df_meta_for_Roe_SP <- df_meta_for_Roe %>% 
+  filter(disease_type_edit == "SP")
+
+celltype_axis <- c("celltype_Myeloid")
+diseasetype_axis <- c("disease_type2_edit")
+
+for (i in 1:length(celltype_axis)) {
+  # i <- 1
+  this_celltype_axis <- celltype_axis[i]
+  
+  for (j in 1:length(diseasetype_axis)) {
+    # j <- 2
+    this_diseasetype_axis <- diseasetype_axis[j]
+    print(paste(this_celltype_axis, this_diseasetype_axis, sep = ", "))
+    
+    this_df_for_freq0 <- df_meta_for_Roe_SP %>% 
+      filter(celltype_for_freq != "Malignant") %>% 
+      dplyr::count(get(this_celltype_axis), get(this_diseasetype_axis))
+    
+    this_df_for_freq_wide <- this_df_for_freq0 %>% 
+      pivot_wider(names_from = `get(this_celltype_axis)`, 
+                  values_from = n)
+    this_df_for_freq_wide[is.na(this_df_for_freq_wide)] <- 0
+    
+    this_df_for_freq_wide$Macro <- 0
+    this_df_for_freq_wide <- this_df_for_freq_wide %>% 
+      dplyr::select(all_of(c("get(this_diseasetype_axis)", fct_annot, "NA")))
+    
+    this_mat_for_Roe <- this_df_for_freq_wide %>% 
+      dplyr::select(-`get(this_diseasetype_axis)`) %>% 
+      as.matrix()
+    rownames(this_mat_for_Roe) <- this_df_for_freq_wide$`get(this_diseasetype_axis)`
+    
+    this_mat_for_Roe_exp <- expected(this_mat_for_Roe)
+    
+    this_mat_for_Roe_diff <- this_mat_for_Roe / this_mat_for_Roe_exp
+    
+    # save matrix
+    this_mat_for_Roe %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_obs_{this_celltype_axis}_SP_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_exp %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_exp_{this_celltype_axis}_SP_by_{this_diseasetype_axis}.txt"))
+    
+    this_mat_for_Roe_diff %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_diff_{this_celltype_axis}_SP_by_{this_diseasetype_axis}.txt"))
+    
+    # binomial test
+    this_vec_for_Roe <- as.vector(this_mat_for_Roe)
+    this_vec_for_Roe_prob <- as.vector(this_mat_for_Roe_exp) / sum(this_vec_for_Roe)
+    this_trials <- sum(this_vec_for_Roe)
+    
+    this_vec_for_Roe_binom <- vector()
+    for (k in 1:length(this_vec_for_Roe)) {
+      # k <- 1
+      this_res_binom <- binom.test(x = this_vec_for_Roe[k], 
+                                   n = this_trials, 
+                                   p = this_vec_for_Roe_prob[k])
+      this_vec_for_Roe_binom[k] <- this_res_binom$p.value
+    }
+    
+    this_mat_for_Roe_binom_pval <- this_vec_for_Roe_binom
+    dim(this_mat_for_Roe_binom_pval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_pval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_pval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_SP_by_{this_diseasetype_axis}_binom_pval.txt"))
+    
+    this_mat_for_Roe_binom_qval <- p.adjust(this_mat_for_Roe_binom_pval, method = "BH")
+    dim(this_mat_for_Roe_binom_qval) <- dim(this_mat_for_Roe)
+    dimnames(this_mat_for_Roe_binom_qval) <- dimnames(this_mat_for_Roe)
+    this_mat_for_Roe_binom_qval %>%
+      as_tibble(rownames = this_diseasetype_axis) %>% 
+      write_tsv(str_glue("{outdir_table}/mat_Roe_{this_celltype_axis}_SP_by_{this_diseasetype_axis}_binom_qval.txt"))
+    
+    # matrix for Heatmap
+    this_mat_for_Roe_diff[, c("Macro", "mregDC")] <- NA
+    
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 3] <- "+++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 2 & this_mat_for_Roe_diff < 3] <- "++"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 1.5 & this_mat_for_Roe_diff < 2] <- "+"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0.67 & this_mat_for_Roe_diff < 1.5] <- "+-"
+    this_mat_for_Roe_diff2[this_mat_for_Roe_diff >= 0 & this_mat_for_Roe_diff < 0.67] <- "-"
+    this_mat_for_Roe_diff2[is.na(this_mat_for_Roe_diff2)] <- ""
+    
+    this_mat_for_Roe_diff2 <- this_mat_for_Roe_diff2[, colnames(this_mat_for_Roe_diff2) != "NA"]
+    
+    colors_fill <- c("gray95", "darkslategray1", "cornsilk", "red", "red3")
+    
+    # Heatmap
+    fig <- Heatmap(this_mat_for_Roe_diff2, name = "mat", 
+                   cluster_columns = FALSE,
+                   cluster_rows = FALSE,
+                   col = colors_fill,
+                   show_heatmap_legend = FALSE,
+                   cell_fun = function(j, i, x, y, width, height, fill) {
+                     grid.text(this_mat_for_Roe_diff2[i, j], x, y, gp = gpar(fontsize = 20))
+                   },
+                   width = ncol(this_mat_for_Roe_diff2) * unit(20, "mm"), 
+                   height = nrow(this_mat_for_Roe_diff2) * unit(20, "mm"),
+                   rect_gp = gpar(lwd = 1.5))
+    
+    pdf(str_glue("{outdir_pdf}/Fig5b_Roe_{this_celltype_axis}_SP_by_{this_diseasetype_axis}.pdf"), width = 8)
+    print(fig)
+    dev.off()
+  }
+}
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

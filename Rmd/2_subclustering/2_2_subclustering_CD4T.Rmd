@@ -1,0 +1,242 @@
+---
+title: "subclustering_CD4T"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/03/25"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(scales)
+theme_set(theme_cowplot())
+
+library(Seurat)
+library(Matrix)
+library(broom)
+
+library(ggrepel)
+library(presto)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/02_subclustering_CD4T/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/02_subclustering_CD4T/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/3_reclutser/9_Reannotation/02_subclustering_CD4T/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load Seurat obj}
+mouseNK_data <- readRDS("result/REVISION/2023-08-29/4_Data_filt3/3_reclutser/9_Reannotation/01_subclustering_T_NK/rds/mouseNK_subdata_T_NK_after_annotation_dim30res0050.rds")
+this_dataset <- "mouseNK_CITEdata"
+```
+
+# 2. CD4T subset
+```{r subset}
+Idents(mouseNK_data) <- mouseNK_data$celltype_T_NK
+Idents(mouseNK_data) %>% unique()
+
+mouseNK_subdata <- subset(x = mouseNK_data, idents = "CD4T")
+
+DefaultAssay(mouseNK_subdata) <- 'SCT'
+```
+
+```{r subset SCT PCA}
+mouseNK_subdata <- SCTransform(mouseNK_subdata, 
+                               vst.flavor = "v2", 
+                               vars.to.regress = "percent.mt", 
+                               verbose = TRUE, conserve.memory = TRUE)
+
+DefaultAssay(mouseNK_subdata) <- "SCT"
+
+Variablefeatureremove_mouse_genelst
+VariableFeatures(mouseNK_subdata) <- VariableFeatures(mouseNK_subdata)[!str_detect(VariableFeatures(mouseNK_subdata),
+                                                                                   paste(Variablefeatureremove_mouse_genelst, collapse = "|"))]
+
+mouseNK_subdata <- RunPCA(mouseNK_subdata, npcs = 100, ndims.print = 1:5, nfeatures.print = 5)
+
+DefaultAssay(mouseNK_subdata) <- 'SCT'
+```
+
+# 3. Sub-clustering
+
+```{r load gene sets}
+known_genes <- read_tsv("ref/cluster_ref_genes/genes_for_bubbleplot_subcluster_CD4T.txt")
+known_genes_included <- known_genes$gene[known_genes$gene %in% rownames(mouseNK_subdata[["SCT"]])]
+```
+
+```{r Sub-clustering}
+# KNN clustering
+dim <- 30
+res <- 0.35
+
+mouseNK_subdata <- FindNeighbors(mouseNK_subdata, dims = 1:dim)
+mouseNK_subdata <- RunUMAP(mouseNK_subdata, dims = 1:dim)
+mouseNK_subdata <- FindClusters(mouseNK_subdata, resolution = res, algorithm = 3)
+
+# UMAP seurat clusters
+p1 <- DimPlot(mouseNK_subdata, reduction = 'umap', 
+        label = TRUE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p2 <- DimPlot(mouseNK_subdata, reduction = 'umap', group.by = "gemname3",
+        label = FALSE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p3 <- DimPlot(mouseNK_subdata, reduction = 'umap', group.by = "disease_type2",
+        label = FALSE, repel = TRUE) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+p5 <- VlnPlot(mouseNK_subdata, 
+              features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+              ncol = 3, pt.size = 0)
+
+pdf(str_glue("{outdir_pdf}/UMAP_CD4T_subcluster_notAnnotated_dim{dim}res00{res*100}.pdf"))
+print(p1)
+print(p1 + NoLegend())
+print(p2)
+print(p2 + NoLegend())
+print(p3)
+print(p3 + NoLegend())
+print(p5)
+dev.off()
+
+# UMAP gene markers
+pdf(str_glue("{outdir_pdf}/UMAP_CD4T_subcluster_known_genes_dim{dim}.pdf"))
+for (i in 1:length(known_genes_included)) {
+  # i <- 19
+  this_gene <- known_genes_included[i]
+  p <- FeaturePlot(mouseNK_subdata, features = this_gene, 
+                   raster = TRUE, pt.size = 2.5, raster.dpi = c(600, 600))
+  print(p)
+}
+dev.off()
+```
+
+# 4, Add annotation
+```{r add annotation}
+df_cluster_annot <- read_tsv("ref/cluster_annotation/REV_cluster_annotation_CD4T_dim30_res035_240408.txt")
+
+tmp_metadata <- mouseNK_subdata@meta.data %>% 
+    mutate(seurat_clusters = as.numeric(as.character(seurat_clusters))) %>% 
+    left_join(df_cluster_annot, by = "seurat_clusters") %>% 
+    dplyr::select(CD4T_subcluster, celltype_CD4T)
+rownames(tmp_metadata) <- rownames(mouseNK_subdata@meta.data)
+
+mouseNK_subdata <- AddMetaData(object = mouseNK_subdata, metadata = tmp_metadata)
+  
+mouseNK_subdata@meta.data$CD4T_subcluster <- factor(mouseNK_subdata@meta.data$CD4T_subcluster, 
+                                                    levels = unique(df_cluster_annot$CD4T_subcluster))
+mouseNK_subdata@meta.data$celltype_CD4T <- factor(mouseNK_subdata@meta.data$celltype_CD4T, 
+                                                  levels = unique(df_cluster_annot$celltype_CD4T))
+```
+
+# 5. Save
+```{r save UMAP}
+fig1 <- DimPlot(mouseNK_subdata, reduction = 'umap', label.size = 5,
+                group.by = "CD4T_subcluster",
+                label = TRUE, repel = TRUE, 
+                raster = TRUE, pt.size = 2, raster.dpi = c(600, 600)) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+fig2 <- DimPlot(mouseNK_subdata, reduction = 'umap', label.size = 5,
+                group.by = "celltype_CD4T",
+                label = TRUE, repel = TRUE, 
+                raster = TRUE, pt.size = 2, raster.dpi = c(600, 600)) + 
+  labs(title = str_glue("RNA dim: {dim}, res: {res}")) +
+  theme(plot.title = element_text(size = 15))
+
+Idents(mouseNK_subdata) <- mouseNK_subdata$celltype_CD4T
+fig4 <- VlnPlot(mouseNK_subdata, 
+                features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+                ncol = 3, pt.size = 0)
+
+pdf(str_glue("{outdir_pdf}/FigS5i_UMAP_CD4T_subcluster_Annotated_dim{dim}res00{res*100}_raster.pdf"))
+print(fig1)
+print(fig1 + NoLegend())
+print(fig2)
+print(fig2 + NoLegend())
+print(fig4)
+dev.off()
+```
+
+```{r dotplot for manuscript}
+df_genes <- read_tsv("ref/cluster_ref_genes/genes_for_bubbleplot_REVISION/genes_for_bubbleplot_celltype_CD4T.txt")
+
+Idents(mouseNK_subdata) <- mouseNK_subdata$celltype_CD4T
+
+fig1 <- DotPlot(object = mouseNK_subdata,
+                assay = 'SCT',
+                features = rev(unique(df_genes$gene)), 
+                cols = c("lightgrey", "red"),
+                col.min = 0.1,
+                col.max = 2,
+                scale.min = 10,
+                scale.max = 60,
+                cluster.idents = FALSE) + 
+  theme(axis.text.x = element_text(size = 10, 
+                                   angle = 90,
+                                   vjust = 0.5,
+                                   hjust = 1)) +
+  xlab("") +
+  ylab("") +
+  coord_flip()
+
+pdf(str_glue("{outdir_pdf}/FigS5j_Dotplot_celltype_CD4T_for_manuscript_scaled_R2.pdf"), height = 10)
+print(fig1)
+dev.off()
+```
+
+```{r save data}
+DefaultAssay(mouseNK_subdata) <- "SCT"
+
+saveRDS(mouseNK_subdata, str_glue("{outdir_Robj}/mouseNK_subdata_CD4T_after_annotation_dim{dim}res00{res*100}.rds"))
+
+mouseNK_subdata@meta.data %>%
+  as_tibble() %>%
+  write_tsv(str_glue("{outdir_table}/metadata_mouseNK_subdata_CD4T_after_annotation_dim{dim}res00{res*100}.txt"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

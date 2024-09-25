@@ -1,0 +1,122 @@
+---
+title: "compare_centr_LMPn_cells_vs_LMPp_cells"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(readxl)
+library(RColorBrewer)
+library(cowplot)
+theme_set(theme_cowplot())
+library(CellChat)
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/03_compare_centr_LMPn_cells_vs_LMPp_cells/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/03_compare_centr_LMPn_cells_vs_LMPp_cells/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/03_compare_centr_LMPn_cells_vs_LMPp_cells/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load scaled data}
+df_outdeg_scaled <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/14_CellInteraction/02_CellChat_celltype_overall_detail/table/mat_netAnalysis_signalingRole_outgoing_scaled.txt")
+
+df_indeg_scaled <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/14_CellInteraction/02_CellChat_celltype_overall_detail/table/mat_netAnalysis_signalingRole_incoming_scaled.txt")
+```
+
+# 2. Outgoing signaling
+```{r bar plot outgoing scaled}
+df_outdeg_scaled_filt <- df_outdeg_scaled %>% 
+  select(Pathway, Tumor_LMPn, Tumor_LMPp) %>% 
+  filter(Tumor_LMPn != 0 | Tumor_LMPp != 0) %>% 
+  pivot_longer(cols = -Pathway) %>% 
+  rename("pathway_name" = Pathway,
+         "source" = name,
+         "outdeg_scaled" = value)
+df_outdeg_scaled_filt$pathway_name <- factor(df_outdeg_scaled_filt$pathway_name, levels = pathway_order)
+df_outdeg_scaled_filt$source <- factor(df_outdeg_scaled_filt$source, levels = c("Tumor_LMPp", "Tumor_LMPn"))
+
+barplot_dodge_scaled <- df_outdeg_scaled_filt %>% 
+  ggplot(aes(x = pathway_name, y = outdeg_scaled, fill = source)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.75) +
+  xlab("") +
+  ylab("Outgoing signaling (scaled)") +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, 0.25),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.title  = element_blank()
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick3", "dodgerblue4")) +
+  guides(fill = guide_legend(reverse = TRUE))
+
+barplot_dodge_scaled
+ggsave(str_glue("{outdir_pdf}/Fig5d_Barplot_outgoing_signaling_LMPn_tumor_cells_vs_LMPp_tumor_cells_bar_scaled.pdf"))
+```
+
+# 3. Incoming signaling
+```{r bar plot incoming scaled}
+df_indeg_scaled_filt <- df_indeg_scaled %>% 
+  select(Pathway, Tumor_LMPn, Tumor_LMPp) %>% 
+  filter(Tumor_LMPn != 0 | Tumor_LMPp != 0) %>% 
+  pivot_longer(cols = -Pathway) %>% 
+  rename("pathway_name" = Pathway,
+         "target" = name,
+         "indeg_scaled" = value)
+df_indeg_scaled_filt$pathway_name <- factor(df_indeg_scaled_filt$pathway_name, levels = pathway_order)
+df_indeg_scaled_filt$target <- factor(df_indeg_scaled_filt$target, levels = c("Tumor_LMPp", "Tumor_LMPn"))
+
+barplot_dodge_scaled <- df_indeg_scaled_filt %>% 
+  ggplot(aes(x = pathway_name, y = indeg_scaled, fill = target)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.75) +
+  xlab("") +
+  ylab("Incoming signaling (scaled)") +
+  scale_y_continuous(
+    limits = c(0, 0.5),
+    breaks = seq(0, 0.5, 0.1),
+    expand = c(0, 0)
+  ) +
+  theme(
+    legend.title  = element_blank()
+  ) +
+  coord_flip() +
+  scale_fill_manual(values = c("firebrick3", "dodgerblue4")) +
+  guides(fill = guide_legend(reverse = TRUE))
+
+barplot_dodge_scaled
+ggsave(str_glue("{outdir_pdf}/Fig5d_Barplot_incoming_signaling_LMPn_tumor_cells_vs_LMPp_tumor_cells_bar_scaled.pdf"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

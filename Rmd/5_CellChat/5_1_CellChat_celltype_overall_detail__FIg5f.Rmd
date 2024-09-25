@@ -1,0 +1,359 @@
+---
+title: "CellChat_celltype_overall_detail"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2024/04/10"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+library(broom)
+library(ComplexHeatmap)
+library(circlize)
+library(CellChat)
+library(patchwork)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/02_CellChat_celltype_overall_detail/pdf")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/02_CellChat_celltype_overall_detail/table")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Rds
+outdir_Robj <- str_glue("result/REVISION/{tst}/4_Data_filt3/14_CellInteraction/02_CellChat_celltype_overall_detail/rds")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load Seurat obj}
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_RNAdim45dim011_afterExclude_v1_other3660SP.rds")
+```
+
+```{r load metadata}
+Annotation_metadata_filt1_df <- read_tsv("result/REVISION/2023-08-29/4_Data_filt3/3_reclutser/9_Reannotation/06_integrate_subclusters/table/metadata_mouseNK_data_celltype_overall.txt")
+
+Annotation_metadata_filt1_df$cellbarcode2 %>% length()
+```
+
+```{r combine metadata}
+Annotation_metadata_filt1_df %>% colnames()
+mouseNK_data@meta.data %>% colnames()
+
+setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))
+unique(c("cellbarcode2", setdiff(colnames(Annotation_metadata_filt1_df), colnames(mouseNK_data@meta.data))))
+
+annotation_df <- Annotation_metadata_filt1_df %>% 
+  dplyr::select(unique(c("cellbarcode2", 
+                         setdiff(colnames(Annotation_metadata_filt1_df), 
+                                 colnames(mouseNK_data@meta.data))))) %>% 
+  as.data.frame()
+rownames(annotation_df) <- annotation_df$cellbarcode2
+annotation_df %>% head()
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = annotation_df)
+```
+
+```{r add diseasetype}
+mouseNK_data@meta.data <- mouseNK_data@meta.data %>% 
+  mutate(
+    disease_type_edit = case_when(
+      disease_type %in% c("mNK_SG", "mNK_Tu") ~ "SG/Other",
+      disease_type == "mNK_SP"                ~ "SP"
+    ),
+    disease_type2_edit = case_when(
+      disease_type2 %in% c("CreN_pre", "CreP_pre") ~ "Pre-tumor",
+      disease_type2 == "CreP_Tumor"                ~ "Trp53-/- tumor",
+      disease_type2 == "CreLMP1P_Tumor"            ~ "Trp53-/- LMP1+ tumor"
+    ),
+    disease_type3 = case_when(
+      disease_type == "mNK_SG" & disease_type2 == "CreN_pre"       ~ "SG_CreN_pre",
+      disease_type == "mNK_SG" & disease_type2 == "CreP_pre"       ~ "SG_CreP_pre",
+      disease_type == "mNK_SP" & disease_type2 == "CreN_pre"       ~ "SP_CreN_pre",
+      disease_type == "mNK_SP" & disease_type2 == "CreP_pre"       ~ "SP_CreP_pre",
+      disease_type == "mNK_SG" & disease_type2 == "CreP_Tumor"     ~ "SG_CreP_LMPn_tumor",
+      # disease_type == "mNK_SG" & disease_type2 == "CreLMP1P_Tumor" ~ "SG_CreP_LMPp_tumor",
+      disease_type == "mNK_SP" & disease_type2 == "CreP_Tumor"     ~ "SP_CreP_LMPn_tumor",
+      disease_type == "mNK_SP" & disease_type2 == "CreLMP1P_Tumor" ~ "SP_CreP_LMPp_tumor",
+      disease_type == "mNK_Tu" & disease_type2 == "CreLMP1P_Tumor" ~ "Tu_CreP_LMPp_tumor"
+    )
+  ) %>% 
+  mutate(
+    disease_type = fct_relevel(disease_type, c("mNK_SG", "mNK_Tu", "mNK_SP")),
+    disease_type_edit = fct_relevel(disease_type_edit, c("SG/Other", "SP")),
+    disease_type2 = fct_relevel(disease_type2, c("CreN_pre", "CreP_pre", "CreP_Tumor", "CreLMP1P_Tumor")),
+    disease_type2_edit = fct_relevel(disease_type2_edit, c("Pre-tumor", "Trp53-/- tumor", "Trp53-/- LMP1+ tumor")),
+    celltype_overall = fct_relevel(celltype_overall, c("CD4T", "CD8T", "B", 
+                                                       "Myeloid", "NK", "Other", 
+                                                       "Tumor_LMPn", "Tumor_LMPp")),
+    celltype_overall_detail = fct_relevel(celltype_overall_detail, 
+                                          c("CD4T_N", "CD4T_EM", "TREG",
+                                            "CD8T_N", "CD8T_CM", "CD8T_EM", "CD8T_RM", "CD8T_EX",
+                                            "B_Immature", "B_Mature", "Plasmablast",
+                                            "Mono", "Macro", "cDC1", "cDC2", "pDC", "mregDC", "MDSC",
+                                            "NK", "Other", "Tumor_LMPn", "Tumor_LMPp")),
+  )
+```
+
+```{r subset}
+# analyze only tumor samples
+Idents(mouseNK_data) <- mouseNK_data$disease_type2_edit
+mouseNK_data <- subset(x = mouseNK_data, idents = "Pre-tumor", invert = TRUE)
+
+Idents(mouseNK_data) %>% unique()
+
+gc()
+
+# exclude "Other"
+Idents(mouseNK_data) <- mouseNK_data$celltype_overall_detail
+mouseNK_data <- subset(x = mouseNK_data, idents = "Other", invert = TRUE)
+
+Idents(mouseNK_data) %>% unique()
+
+gc()
+
+levels_fixed <- setdiff(levels(mouseNK_data@meta.data$celltype_overall_detail), "Other")
+mouseNK_data@meta.data$celltype_overall_detail <- factor(mouseNK_data@meta.data$celltype_overall_detail, levels_fixed)
+```
+
+# Part I: Data input & processing and initialization of CellChat object
+
+## Load data
+```{r}
+data.input <- mouseNK_data@assays$SCT@data
+meta <- mouseNK_data@meta.data
+cell.use <- rownames(meta)[meta$celltype_overall_detail %in% levels_fixed]
+
+data.input <- data.input[, cell.use]
+meta <- meta[cell.use, ]
+```
+
+## Create a CellChat object
+```{r}
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "celltype_overall_detail")
+```
+
+## Add cell information into meta slot of the object (Optional)
+```{r}
+cellchat <- addMeta(cellchat, meta = meta)
+cellchat <- setIdent(cellchat, ident.use = "celltype_overall_detail")
+
+levels(cellchat@idents)
+unique(cellchat@idents)
+
+groupSize <- as.numeric(table(cellchat@idents))
+names(groupSize) <- levels(cellchat@idents)
+groupSize
+```
+
+## Set the ligand-receptor interaction database
+```{r}
+CellChatDB <- CellChatDB.mouse
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling")
+cellchat@DB <- CellChatDB.use
+```
+
+## Preprocessing the expression data for cell-cell communication analysis
+```{r}
+cellchat <- subsetData(cellchat)
+
+future::plan("multisession", workers = 4)
+options(future.globals.maxSize = 50000 * 1024^2)
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+```
+
+# Part II: Inference of cell-cell communication network
+
+## Compute the communication probability and infer cellular communication network
+```{r}
+cellchat@idents <- factor(cellchat@idents, levels = levels_fixed)
+
+cellchat <- computeCommunProb(cellchat)
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+```
+
+## Extract the inferred cellular communication network as a data frame
+```{r}
+df.net <- subsetCommunication(cellchat)
+
+# for supplementary table
+df.net %>% 
+  dplyr::select(-annotation, -evidence) %>% 
+  dplyr::rename("Source" = source,
+                "Target" = target,
+                "Ligand" = ligand,
+                "Receptor" = receptor,
+                "Communication probability" = prob,
+                "P-value" = pval,
+                "Interaction name" = interaction_name_2,
+                "Pathway name" = pathway_name) %>% 
+  dplyr::select(`Interaction name`, `Pathway name`, 
+                Source, Target, Ligand, Receptor, 
+                `Communication probability`, `P-value`) %>% 
+  write_tsv(str_glue("{outdir_table}/df_inferred_cellular_communication_network_LR_for_suppl.txt"))
+```
+
+## Infer the cell-cell communication at a signaling pathway level
+```{r}
+cellchat <- computeCommunProbPathway(cellchat)
+df.netP <- subsetCommunication(cellchat, slot.name = "netP")
+```
+
+## Calculate the aggregated cell-cell communication network
+```{r}
+cellchat <- aggregateNet(cellchat)
+```
+
+# Part III: Visualization of cell-cell communication network
+
+```{r}
+pathways.show.all <- cellchat@netP$pathways
+```
+
+```{r}
+for (i in 1:length(pathways.show.all)) {
+  # i <- 10
+  this_pathway <- pathways.show.all[i]
+  pairLR.this <- extractEnrichedLR(cellchat,
+                                   signaling = this_pathway,
+                                   geneLR.return = FALSE)
+  for (k in 1:nrow(pairLR.this)) {
+    LR.show <- pairLR.this[k,]
+
+    # Chord diagram
+    pdf(str_glue("{outdir_pdf}/Fig5f_netVisual_individualchord_{this_pathway}_{LR.show}.pdf"), width = 15, height = 16)
+    netVisual_individual(cellchat,
+                         signaling = this_pathway,
+                         pairLR.use = LR.show,
+                         layout = "chord")
+    dev.off()
+  }
+}
+```
+
+# Part IV: Systems analysis of cell-cell communication network
+
+## Identify signaling roles (e.g., dominant senders, receivers) of cell groups as well as the major contributing signaling
+
+### Compute the network centrality scores
+```{r}
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+```
+
+### Identify signals contributing most to outgoing or incoming signaling of certain cell groups
+```{r}
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, 
+                                         width = 20,
+                                         height = 20,
+                                         font.size = 12,
+                                         font.size.title = 12,
+                                         pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, 
+                                         width = 20,
+                                         height = 20,
+                                         font.size = 12,
+                                         font.size.title = 12,
+                                         pattern = "incoming")
+
+pdf(str_glue("{outdir_pdf}/FigS6d_netAnalysis_signalingRole_heatmap_both.pdf"), width = 35, height = 20)
+ht1 + ht2
+dev.off()
+
+# save the source of heatmap
+mat_outgoing <- matrix(0, 
+                       nrow = length(cellchat@netP$pathways), 
+                       ncol = length(levels(cellchat@idents)))
+rownames(mat_outgoing) <- cellchat@netP$pathways
+colnames(mat_outgoing) <- levels(cellchat@idents)
+mat_incoming <- matrix(0, 
+                       nrow = length(cellchat@netP$pathways), 
+                       ncol = length(levels(cellchat@idents)))
+rownames(mat_incoming) <- cellchat@netP$pathways
+colnames(mat_incoming) <- levels(cellchat@idents)
+
+for (i in 1:length(cellchat@netP$centr)) {
+  # i <- 10
+  this_pathway <- pathways.show.all[i]
+  mat_outgoing[this_pathway,] <- cellchat@netP$centr[[this_pathway]]$outdeg
+  mat_incoming[this_pathway,] <- cellchat@netP$centr[[this_pathway]]$indeg
+}
+
+mat_outgoing %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Pathway") %>% 
+  as_tibble() %>% 
+  write_tsv(str_glue("{outdir_table}/mat_netAnalysis_signalingRole_outgoing.txt"))
+
+mat_incoming %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Pathway") %>% 
+  as_tibble() %>% 
+  write_tsv(str_glue("{outdir_table}/mat_netAnalysis_signalingRole_incoming.txt"))
+
+# save the scaled source
+ht1@matrix %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Pathway") %>% 
+  as_tibble() %>% 
+  mutate_all(funs(ifelse(is.na(.), 0, .))) %>% 
+  write_tsv(str_glue("{outdir_table}/mat_netAnalysis_signalingRole_outgoing_scaled.txt"))
+
+ht2@matrix %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Pathway") %>% 
+  as_tibble() %>% 
+  mutate_all(funs(ifelse(is.na(.), 0, .))) %>% 
+  write_tsv(str_glue("{outdir_table}/mat_netAnalysis_signalingRole_incoming_scaled.txt"))
+```
+
+# Part V: Save the CellChat object
+
+```{r}
+saveRDS(cellchat, file = str_glue("{outdir_Robj}/mouseNK_data_cellchat_Tumor.rds"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

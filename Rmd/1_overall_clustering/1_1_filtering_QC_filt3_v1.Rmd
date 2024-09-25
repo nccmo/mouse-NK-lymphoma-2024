@@ -1,0 +1,229 @@
+---
+title: "filtering_QC_filt3_v1"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2022/06/23"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+library(glmGamPoi)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make directory}
+dir.create("result/table/aggr/Datafilt3/cellcount/",      showWarnings = FALSE, recursive = TRUE)
+dir.create("result/pdf/aggr/Datafilt3/cellcount/",        showWarnings = FALSE, recursive = TRUE)
+dir.create("result/table/Robj/aggr/", showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1, Input
+```{r input}
+memory.limit(size = 500000000)
+
+# read input data with "Read10X" function
+mouseNK.data <- Read10X(data.dir = "../../data/aggr_result/230315_mouseNK_v1/filtered_feature_bc_matrix/")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+mouseNK_data <- CreateSeuratObject(counts = mouseNK.data[["Gene Expression"]], project = "mouseNK", min.cells = 30, min.features = 200)
+mouseNK_data[["ADT"]] <- CreateAssayObject(counts = mouseNK.data[["Antibody Capture"]][,colnames(x = mouseNK_data)])
+
+rm(mouseNK.data)
+gc(reset = T)
+```
+
+# 2, Add library names
+```{r add library names}
+gemgroup <- sapply(strsplit(colnames(mouseNK_data), split = "-"), "[[", 2)
+names(gemgroup) <- colnames(x = mouseNK_data)
+
+aggr_sheet <- read_csv("data/aggr_result/230315_mouseNK_v1/aggregation.csv") 
+aggr_sheet <- aggr_sheet %>% 
+  mutate(gemgroup = as.character(1:nrow(aggr_sheet))) %>% 
+  select(gemgroup, library_id)
+
+gemname <- data.frame(gemgroup) %>% 
+  left_join(aggr_sheet) %>% 
+  pull(library_id)
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = gemname, col.name = "gemname")
+```
+
+# 3, Add HTO group data
+```{r add HTO group data}
+Annotation_metadata_filt1_df <- read_tsv("result/table/aggr/Dataorigninal/metadata/mouseNK_HTOgroup_metadata_pool.txt")
+
+annotation_df <- Annotation_metadata_filt1_df %>% 
+  select(unique(c("cellbarcode2", setdiff(colnames(Annotation_metadata_filt1_df), c(colnames(mouseNK_data@meta.data))))))
+rownames(annotation_df) <- annotation_df$cellbarcode2
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = annotation_df)
+mouseNK_data$HTOgroup <- factor(mouseNK_data$HTOgroup, levels = c("HTO1", "HTO2", "others"))
+```
+
+# 4, Remove doublets
+```{r read doublet df}
+doublet_df <- read_tsv("result/table/aggr/Dataorigninal/Exclusion_cellbarcode/Doubletcells_DoubletFinder_0.25_0.09_0070_cellbarcode_eachsample_dim55_withoutAggrNorm.txt")
+
+HTO_doublet <- mouseNK_data@meta.data %>% 
+  select(cellbarcode2, HTOgroup) %>% 
+  filter(HTOgroup %in% c("others")) %>% 
+  pull(cellbarcode2)
+
+HTO_doublet %>% length()
+
+unique(doublet_df$cell_barcode) %>% length()
+
+intersect(doublet_df$cell_barcode, HTO_doublet) %>% length()
+union(doublet_df$cell_barcode, HTO_doublet) %>% length()
+unique(c(doublet_df$cell_barcode, HTO_doublet)) %>% length()
+
+mouseNK_data@meta.data %>% 
+  filter(cellbarcode2 %in% union(doublet_df$cell_barcode, HTO_doublet)) %>% 
+  dplyr::count(gemname3) %>%
+  write_tsv(paste("result/table/aggr/Datafilt3/cellcount/outlier_doublets_gemname_dim55.txt", sep = ""))
+```
+
+```{r remove doublets}
+cell_number_df <- FetchData(mouseNK_data, vars = c("gemname")) %>% 
+  dplyr::count(gemname)
+cell_number_df %>%
+  write_tsv(paste("result/table/aggr/Datafilt3/cellcount/mouseNK_originaldata_cellcount", ".txt", sep = ""))
+
+mouseNK_data_afterExclude <- subset(mouseNK_data, cells = unique(c(doublet_df$cell_barcode, HTO_doublet)), invert = TRUE)
+mouseNK_data_afterExclude@meta.data %>% nrow()
+
+cell_number_df2 <- FetchData(mouseNK_data_afterExclude, vars = c("gemname3")) %>% 
+  dplyr::count(gemname3)
+cell_number_df2 %>%
+  write_tsv(paste("result/table/aggr/Datafilt3/cellcount/mouseNK_afterExclude_cellcount_gemname3", ".txt", sep = ""))
+
+rm(mouseNK_data)
+gc(reset = T)
+```
+
+# 5, Exclude the low-quality sample
+```{r exclude the low-quality sample}
+Idents(mouseNK_data_afterExclude) <- mouseNK_data_afterExclude$gemname3
+mouseNK_data_afterExclude <- subset(x = mouseNK_data_afterExclude, idents = c("mNK_3660_SP"), invert = TRUE)
+mouseNK_data_afterExclude$gemname3 %>% unique()
+```
+
+# 6, QC and filtering
+```{r QC and filtering}
+mouseNK_data_afterExclude[["percent.mt"]] <- PercentageFeatureSet(mouseNK_data_afterExclude, pattern = "^mt-")
+
+# QC by samples
+VlnPlot(mouseNK_data_afterExclude, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
+
+VlnPlot(mouseNK_data_afterExclude, features = "nFeature_RNA", ncol = 1, pt.size = 0, group.by = "gemname3") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) + 
+  geom_hline(yintercept = 4000) + 
+  geom_hline(yintercept = 5000) + 
+  geom_hline(yintercept = 6000) + 
+  geom_hline(yintercept = 7000) + 
+  geom_hline(yintercept = 8000, colour = "red")
+
+VlnPlot(mouseNK_data_afterExclude, features = "nCount_RNA", ncol = 1, pt.size = 0, group.by = "gemname3") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7))
+
+VlnPlot(mouseNK_data_afterExclude, features = "percent.mt", ncol = 1, pt.size = 0, group.by = "gemname3") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) +
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10) + 
+  geom_hline(yintercept = 15)
+
+FeatureScatter(mouseNK_data_afterExclude, feature1 = "nCount_RNA", feature2 = "percent.mt", group.by = "gemname3")  + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10) + 
+  geom_hline(yintercept = 15) +
+  theme(legend.position = "none")
+
+FeatureScatter(mouseNK_data_afterExclude, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "gemname3") + 
+  geom_hline(yintercept = 3000) + 
+  geom_hline(yintercept = 3500) + 
+  geom_hline(yintercept = 4000) 
+
+# filtering
+mouseNK_data_afterExclude <- subset(mouseNK_data_afterExclude, subset = nFeature_RNA > 200 & nFeature_RNA < 8000 & percent.mt < 10)
+mouseNK_data_afterExclude@meta.data %>% dim()
+
+cell_number_df3 <- FetchData(mouseNK_data_afterExclude, vars = c("gemname3")) %>% 
+  dplyr::count(gemname3)
+cell_number_df3 %>%
+  write_tsv(paste("result/table/aggr/Datafilt3/cellcount/mouseNK_afterExclude_cellcount_afternFeaturepercentmt", ".txt", sep = ""))
+```
+
+# 7, Normalization and Scaling
+```{r normalization}
+mouseNK_data_afterExclude <- SCTransform(mouseNK_data_afterExclude, method = "glmGamPoi", vst.flavor = "v2", vars.to.regress = "percent.mt", verbose = FALSE)
+
+DefaultAssay(mouseNK_data_afterExclude) <- 'ADT'
+mouseNK_data_afterExclude <- NormalizeData(mouseNK_data_afterExclude, assay = "ADT", normalization.method = "CLR", margin = 2)
+mouseNK_data_afterExclude[['ADT']]@scale.data <- t(scale(t(as.matrix(mouseNK_data_afterExclude[['ADT']]@data))))
+mouseNK_data_afterExclude <- ScaleData(mouseNK_data_afterExclude, assay = "ADT")
+
+mouseNK_data_afterExclude <- NormalizeData(mouseNK_data_afterExclude, assay = "RNA", normalization.method = "LogNormalize", scale.factor = 10000)
+all.genes <- rownames(mouseNK_data_afterExclude)
+mouseNK_data_afterExclude <- ScaleData(mouseNK_data_afterExclude, assay = "RNA", features = all.genes)
+```
+
+# 8, Run PCA
+```{r run PCA}
+DefaultAssay(mouseNK_data_afterExclude) <- 'SCT'
+
+# remove mitochondrial and robosomal genes from variable genes
+print(Variablefeatureremove_mouse_genelst)
+mouseNK_data_afterExclude <- VariableFeatures_genelst(mouseNK_data_afterExclude, Variablefeatureremove_mouse_genelst)
+
+mouseNK_data_afterExclude <- PrepSCTFindMarkers(mouseNK_data_afterExclude)
+
+# Run PCA
+mouseNK_data_afterExclude <- RunPCA(mouseNK_data_afterExclude, npcs = 100, ndims.print = 1:5, nfeatures.print = 5)
+```
+
+# 9, Save
+```{r save}
+DefaultAssay(mouseNK_data_afterExclude) <- "SCT"
+saveRDS(mouseNK_data_afterExclude, file = "result/table/Robj/aggr/mouseNK_data_before_PCA_v1_afterADT_withoutAggrNorm_other3660SP.rds")
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

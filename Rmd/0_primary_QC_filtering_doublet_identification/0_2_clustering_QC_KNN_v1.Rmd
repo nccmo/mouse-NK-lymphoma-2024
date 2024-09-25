@@ -1,0 +1,344 @@
+---
+title: "clustering_QC_KNN_v1"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2022/7/24"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggpubr)
+library(exact2x2)
+library(lawstat)
+library(ggbeeswarm)
+library(scales)
+theme_set(theme_cowplot())
+```
+
+```{r setup single cell}
+library(Seurat)
+library(Matrix)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make directory}
+dir.create("result/table/aggr/Dataorigninal/metadata/",   showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1, Preparation
+```{r read data}
+memory.limit(size = 500000000)
+
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_before_PCA_v1_withoutAggrNorm.rds")
+this_dataset <- "mouseNK_CITEdata"
+```
+
+# 2, KNN clustering
+```{r clustering}
+this_dim <- 55
+print(paste("dimension: ", this_dim, sep = ""))
+
+mouseNK_data <- FindNeighbors(mouseNK_data, dims = 1:this_dim)
+mouseNK_data <- RunUMAP(mouseNK_data, dims = 1:this_dim)
+
+this_res <- 0.2
+print(paste("resolution: ", this_res, sep = ""))
+res_tmp <- (this_res * 100)
+
+mouseNK_data <- FindClusters(mouseNK_data, resolution = this_res, algorithm = 3)
+cluster_res_tmp <- levels(mouseNK_data) %>% length()
+
+original_cluster <- Idents(mouseNK_data)
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = original_cluster, col.name = "original_cluster")
+
+DimPlot(mouseNK_data, reduction = "umap", group.by = "seurat_clusters")
+```
+
+```{r QC by samples}
+VlnPlot(mouseNK_data, features = "nFeature_RNA", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) +
+  geom_hline(yintercept = 6000) + 
+  geom_hline(yintercept = 7000) + 
+  geom_hline(yintercept = 8000, colour = "red") +
+  ylim(c(0, 8100))
+
+VlnPlot(mouseNK_data, features = "nCount_RNA", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7))
+
+VlnPlot(mouseNK_data, features = "percent.mt", ncol = 1, pt.size = 0, group.by = "gemname2") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10) + 
+  geom_hline(yintercept = 15) +
+  ylim(c(0, 17))
+```
+
+```{r QC by clusters}
+VlnPlot(mouseNK_data, features = "nFeature_RNA", ncol = 1, pt.size = 0, group.by = "seurat_clusters") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) +
+  geom_hline(yintercept = 6000) + 
+  geom_hline(yintercept = 7000) + 
+  geom_hline(yintercept = 8000, colour = "red") +
+  ylim(c(0, 8100))
+
+VlnPlot(mouseNK_data, features = "nCount_RNA", ncol = 1, pt.size = 0, group.by = "seurat_clusters") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7))
+
+VlnPlot(mouseNK_data, features = "percent.mt", ncol = 1, pt.size = 0, group.by = "seurat_clusters") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10) + 
+  geom_hline(yintercept = 15) +
+  ylim(c(0, 17))
+```
+
+# 3, HTO
+```{r HTO}
+mouseNK_data$ADT@data %>% rownames()
+
+HTO1pos_HTO1_cutoff_pool1 <- 1.3
+HTO1pos_HTO2_cutoff_pool1 <- 1.2
+HTO2pos_HTO1_cutoff_pool1 <- 1.3
+HTO2pos_HTO2_cutoff_pool1 <- 1.2
+
+HTO1_df <- mouseNK_data$ADT@data["Hashtag-1",] %>% 
+  as_tibble(rownames = "cellbarcode2") %>% 
+  rename(HTO1 = value)
+HTO2_df <- mouseNK_data$ADT@data["Hashtag-2",] %>% 
+  as_tibble(rownames = "cellbarcode2") %>% 
+  rename(HTO2 = value)
+HTO1_df %>% dim()
+HTO2_df %>% dim()
+
+HTO_df <- HTO1_df %>% 
+  left_join2(HTO2_df)
+
+HTO_df %>% 
+  ggplot(aes(x = HTO1,
+             y = HTO2)) +
+  geom_point(size = 0.5) + 
+  geom_hline(yintercept = HTO1pos_HTO2_cutoff_pool1, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_hline(yintercept = HTO2pos_HTO2_cutoff_pool1, linetype = "twodash", size = 1, colour = "red") + 
+  geom_vline(xintercept = HTO2pos_HTO1_cutoff_pool1, linetype = "twodash", size = 1, colour = "red") +
+  geom_vline(xintercept = HTO1pos_HTO1_cutoff_pool1, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_abline(intercept = 0, slope = 0.5, size = 1, colour = "red") +
+  geom_abline(intercept = 0.03, slope = 0.5, size = 1, colour = "blue") +
+  labs(title = "HTO data Blue line HTO1, Red line HTO2")
+```
+
+```{r HTO count}
+HTO1count_df <- mouseNK_data$ADT@counts["Hashtag-1",] %>% 
+  as_tibble(rownames = "cellbarcode2") %>% 
+  rename(HTO1 = value)
+HTO2count_df <- mouseNK_data$ADT@counts["Hashtag-2",] %>% 
+  as_tibble(rownames = "cellbarcode2") %>% 
+  rename(HTO2 = value)
+HTO1count_df %>% dim()
+HTO1count_df$HTO1 %>% min
+
+HTOcount_df <- HTO1count_df %>% 
+  left_join2(HTO2count_df)
+
+HTO1pos_HTO1_cutoff <- 1.4
+HTO1pos_HTO2_cutoff <- 2.1
+HTO2pos_HTO1_cutoff <- 1.7
+HTO2pos_HTO2_cutoff <- 1.5
+
+HTOcount_df %>% 
+  ggplot(aes(x = log10(HTO1 + 0.1),
+             y = log10(HTO2 + 0.1))) +
+  geom_point(size = 0.5) + 
+  geom_hline(yintercept = HTO2pos_HTO2_cutoff, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_hline(yintercept = HTO1pos_HTO2_cutoff, linetype = "twodash", size = 1, colour = "red") + 
+  geom_vline(xintercept = HTO1pos_HTO1_cutoff, linetype = "twodash", size = 1, colour = "red") +
+  geom_vline(xintercept = HTO2pos_HTO1_cutoff, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_abline(intercept = 0, linetype = "twodash", slope = 1, size = 1, colour = "red") +
+  geom_abline(intercept = 0.8, linetype = "twodash", slope = 1, size = 1, colour = "blue") +
+  labs(title = "HTO raw count data Red line HTO1, Blue line HTO2")
+```
+
+```{r HTO group}
+HTO_df <- HTO1count_df %>% 
+  left_join2(HTO2count_df)
+
+HTO1_cells <- HTO_df %>% 
+  filter(log10(HTO1 + 0.1) >= HTO1pos_HTO1_cutoff) %>% 
+  filter(log10(HTO2 + 0.1) < HTO1pos_HTO2_cutoff) %>% 
+  filter(log10(HTO2 + 0.1) < ((log10(HTO1 + 0.1)) * 1 + 0)) %>% 
+  pull(cellbarcode2)
+
+HTO2_cells <- HTO_df %>% 
+  filter(log10(HTO2 + 0.1) >= HTO2pos_HTO2_cutoff) %>% 
+  filter(log10(HTO1 + 0.1) < HTO2pos_HTO1_cutoff) %>% 
+  filter(log10(HTO2 + 0.1) >= (log10(HTO1 + 0.1) * 1 + 0.8)) %>% 
+  pull(cellbarcode2)
+
+HTO1_cells %>% length()
+HTO2_cells %>% length()
+
+HTO_df %>% dim()
+intersect(HTO1_cells, HTO2_cells)
+```
+
+```{r add HTO group}
+HTOgroup_df <- mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = colnames(mouseNK_data)) %>% 
+  select(cellbarcode2) %>% 
+  mutate(HTOgroup = case_when(cellbarcode2 %in% HTO1_cells ~ "HTO1", 
+                              cellbarcode2 %in% HTO2_cells ~ "HTO2", 
+                              TRUE ~ "others"))
+
+HTOgroup_df %>% 
+  select(HTOgroup) %>% 
+  unique()
+
+HTOgroup_df %>% 
+  dplyr::count(HTOgroup)
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = HTOgroup_df)
+mouseNK_data$HTOgroup <- factor(mouseNK_data$HTOgroup, levels = c("HTO1", "HTO2", "others"))
+```
+
+```{r check HTO}
+HTO_df <- HTO1count_df %>% 
+  left_join2(HTO2count_df)
+
+HTO_df2 <- HTO_df %>% 
+  left_join(HTOgroup_df)
+
+HTO_df2 %>% 
+  ggplot(aes(x = log10(HTO1 + 0.1),
+             y = log10(HTO2 + 0.1),
+             color = HTOgroup)) +
+  geom_point(size = 0.5) + 
+  geom_hline(yintercept = HTO2pos_HTO2_cutoff, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_hline(yintercept = HTO1pos_HTO2_cutoff, linetype = "twodash", size = 1, colour = "red") + 
+  geom_vline(xintercept = HTO1pos_HTO1_cutoff, linetype = "twodash", size = 1, colour = "red") +
+  geom_vline(xintercept = HTO2pos_HTO1_cutoff, linetype = "twodash", size = 1, colour = "blue") + 
+  geom_abline(intercept = 0, linetype = "twodash", slope = 1, size = 1, colour = "red") +
+  geom_abline(intercept = 0.8, linetype = "twodash", slope = 1, size = 1, colour = "blue") +
+  labs(title = "HTO raw count data Red line HTO1, Blue line HTO2")
+```
+
+```{r QC by HTO group}
+VlnPlot(mouseNK_data, features = "nFeature_RNA", ncol = 1, pt.size = 0, group.by = "HTOgroup") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) +
+  geom_hline(yintercept = 5000) + 
+  geom_hline(yintercept = 7000) + 
+  geom_hline(yintercept = 6000, colour = "red") +
+  ylim(c(0, 7100))
+
+VlnPlot(mouseNK_data, features = "nCount_RNA", ncol = 1, pt.size = 0, group.by = "HTOgroup") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7))
+
+VlnPlot(mouseNK_data, features = "percent.mt", ncol = 1, pt.size = 0, group.by = "HTOgroup") + 
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, size = 7)) + 
+  geom_hline(yintercept = 5) + 
+  geom_hline(yintercept = 10) + 
+  geom_hline(yintercept = 15) +
+  ylim(c(0, 17))
+```
+
+# 4, Add gemname3 and disease_type
+```{r add gemname3}
+mouseNK_data$HTOgroup %>% unique()
+mouseNK_data@meta.data$HTOgroup %>% unique()
+mouseNK_data@meta.data$gemname2 %>% unique()
+
+gemname3_df <- mouseNK_data@meta.data %>%
+  mutate(gemname3 = case_when(
+    (gemname2 == "mNK_pool001") & (HTOgroup == "HTO1") ~ "mNK_4285_SG",
+    (gemname2 == "mNK_pool001") & (HTOgroup == "HTO2") ~ "mNK_4284_SG",
+    (gemname2 == "mNK_pool002") & (HTOgroup == "HTO1") ~ "mNK_2754_SP",
+    (gemname2 == "mNK_pool002") & (HTOgroup == "HTO2") ~ "mNK_3660_SP",
+    (gemname2 == "mNK_pool003") & (HTOgroup == "HTO1") ~ "mNK_4285_SP",
+    (gemname2 == "mNK_pool003") & (HTOgroup == "HTO2") ~ "mNK_4284_SP",
+    (gemname2 == "mNK_pool004") & (HTOgroup == "HTO1") ~ "mNK_3714_SG",
+    (gemname2 == "mNK_pool004") & (HTOgroup == "HTO2") ~ "mNK_3856_SG",
+    (gemname2 == "mNK_pool005") & (HTOgroup == "HTO1") ~ "mNK_3714_SP",
+    (gemname2 == "mNK_pool005") & (HTOgroup == "HTO2") ~ "mNK_3856_SP",
+    (gemname2 == "mNK_pool006") & (HTOgroup == "HTO1") ~ "mNK_4453_SP",
+    (gemname2 == "mNK_pool006") & (HTOgroup == "HTO2") ~ "mNK_4457_SP",
+    (gemname2 == "mNK_pool007") & (HTOgroup == "HTO1") ~ "mNK_4453_Tu",
+    (gemname2 == "mNK_pool007") & (HTOgroup == "HTO2") ~ "mNK_4457_Tu",
+    (gemname2 == "mNK_pool008") & (HTOgroup == "HTO1") ~ "mNK_3777_SP",
+    (gemname2 == "mNK_pool008") & (HTOgroup == "HTO2") ~ "mNK_3797_SP",
+    (gemname2 == "mNK_pool009") & (HTOgroup == "HTO1") ~ "mNK_4214_SP",
+    (gemname2 == "mNK_pool009") & (HTOgroup == "HTO2") ~ "mNK_4214_SG",
+    TRUE ~ "others",
+  )) %>%
+  select(gemname3)
+gemname3_df %>% unique()
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = gemname3_df)
+
+mouseNK_data@meta.data %>% select(gemname, gemname3) %>% unique()
+mouseNK_data@meta.data %>% dplyr::count(HTOgroup, gemname3)
+```
+
+```{r add disease_type}
+disease_type_df <- mouseNK_data@meta.data %>%
+  mutate(disease_type = ifelse(gemname3 %in% mNK_SG, "mNK_SG",
+                               ifelse(gemname3 %in% mNK_SP, "mNK_SP", 
+                                      ifelse(gemname3 %in% mNK_Tu, "mNK_Tu", "something wrong")))) %>%
+  select(disease_type)
+
+disease_type_df$disease_type %>% unique()
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = disease_type_df)
+mouseNK_data$disease_type <- factor(mouseNK_data$disease_type, levels = disease_type_mNK_level)
+
+mouseNK_data@meta.data %>% select(disease_type, gemname3) %>% unique()
+```
+
+# 5, Save metadata
+```{r save}
+mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = rownames(mouseNK_data@meta.data)) %>% 
+  tibble() %>% 
+  write_tsv("result/table/aggr/Dataorigninal/metadata/mouseNK_HTOgroup_metadata_pool.txt")
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

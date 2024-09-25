@@ -1,0 +1,4 @@
+seurat_clusters	B_subcluster	celltype_B
+1	B_Immature	B_Immature
+0	B_Mature	B_Mature
+2	Plasmablast	Plasmablast

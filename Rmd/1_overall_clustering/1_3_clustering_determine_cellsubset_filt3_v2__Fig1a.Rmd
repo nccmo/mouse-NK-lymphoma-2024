@@ -1,0 +1,272 @@
+---
+title: "clustering_determine_cellsubset_filt3_v2"
+author: "Mitsuhiro Yuasa, Haryoon Kim"
+date: "2022/7/26"
+output: html_document
+editor_options: 
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(error = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+##########
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+##########
+```
+
+```{r load libraries}
+library(tidyverse)
+library(gsubfn)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(ggsci)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(scales)
+theme_set(theme_cowplot())
+library(Seurat)
+library(Matrix)
+```
+
+```{r source}
+source("R/utilities.R")
+source("ref/cluster_annotation/cluster_annotation_level_220209.R")
+```
+
+```{r make tst and directory}
+tst <- "2023-08-29"
+
+# pdf
+outdir_pdf <- str_glue("result/pdf/{tst}/4_Data_filt3/1_UMAP/3_1_clustering_determine_cellsubset")
+dir.create(outdir_pdf, recursive = TRUE, showWarnings = FALSE)
+
+# table
+outdir_table <- str_glue("result/table/{tst}/4_Data_filt3/1_UMAP/3_1_clustering_determine_cellsubset")
+dir.create(outdir_table, recursive = TRUE, showWarnings = FALSE)
+
+# Robj
+outdir_Robj <- str_glue("result/Robj/{tst}/4_Data_filt3/1_UMAP/3_1_clustering_determine_cellsubset")
+dir.create(outdir_Robj, recursive = TRUE, showWarnings = FALSE)
+```
+
+# 1. Preparation
+```{r load Seurat obj}
+mouseNK_data <- readRDS("result/table/Robj/aggr/mouseNK_data_RNAdim45dim011_afterExclude_v1_other3660SP.rds")
+
+Idents(mouseNK_data) <- mouseNK_data$seurat_clusters
+
+mouseNK_data$cellbarcode2 %>% length()
+```
+
+# 2. UMAP
+```{r UMAP seurat_clusters}
+fig <- DimPlot(mouseNK_data, reduction = "umap", label = TRUE, label.size = 4, group.by = "seurat_clusters")
+
+print(fig + NoLegend())
+ggsave(str_glue("{outdir_pdf}/Fig4a_UMAP_grouped_seurat_clusters_label.pdf"), width = 7, height = 7)
+```
+
+```{r UMAP LMP1 UMI 1}
+LMP1pos_cell <- mouseNK_data$RNA@counts["LMP-1",] %>% 
+  as_tibble(rownames = "cellbarcode2") %>% 
+  filter(value >= 1)
+LMP1pos_cell$cellbarcode2 %>% unique() %>% head()
+LMP1pos_cell$cellbarcode2 %>% unique() %>% length()
+
+mouseNK_data@meta.data %>% head()
+
+mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = rownames(mouseNK_data@meta.data)) %>% 
+  filter(cellbarcode2 %in% unique(LMP1pos_cell$cellbarcode2)) %>% 
+  dplyr::count(gemname3) %>% 
+  rename(LMP1pos_cell_count = n)
+
+umap_pos_df <- mouseNK_data@reductions$umap@cell.embeddings %>% 
+  as_tibble(rownames = "cellbarcode2")
+
+ident_df <- FetchData(mouseNK_data, vars = "ident") %>%
+  as_tibble(rownames = "cellbarcode2")
+
+fig <- umap_pos_df %>%
+  left_join(ident_df) %>%
+  ggplot() +
+  geom_point(aes(x = UMAP_1, y = UMAP_2), color = "grey", size = 0.1, alpha = 0.2) +
+  geom_point(data = umap_pos_df %>% filter(cellbarcode2 %in% unlist(LMP1pos_cell$cellbarcode2 %>% unique())), 
+             aes(x = UMAP_1, y = UMAP_2), color = rgb(0.8, 0, 0), size = 0.7) +
+  labs(title = paste("LMP1 raw UMI >= 1 cells displayed \ncell n = ", 
+                     length(LMP1pos_cell$cellbarcode2 %>% unique()), sep = "")) +
+  theme(axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        plot.title = element_text(size = 10))
+
+fig + NoLegend()
+ggsave(str_glue("{outdir_pdf}/FigS5f_UMAP_LMP1pos_cells_KNN_RNAdim{NKmouse_rna_dimfilt3}res0{NKmouse_resfilt3 * 100}_1UMI.pdf"), width = 7, height = 7)
+```
+
+# 3. Count cluster cells
+```{r cluster cell count}
+cluster_cellcount_df <- mouseNK_data@meta.data %>% 
+  dplyr::count(seurat_clusters) %>% 
+  rename(Total_cellcount = n)
+
+cluster_cellcount_gemname3_df <- mouseNK_data@meta.data %>% 
+  dplyr::count(seurat_clusters, gemname3, disease_type) %>% 
+  rename(gemname3_cellcount = n)
+
+cluster_cellcount_gemname3_df2 <- cluster_cellcount_gemname3_df %>% 
+  left_join(cluster_cellcount_df) %>% 
+  mutate(freq = gemname3_cellcount/Total_cellcount)
+
+cluster_cellcount_gemname3_df2 %>% 
+  filter(freq >= 0.5)
+
+cluster_cellcount_gemname3_df2 %>% 
+  filter(seurat_clusters %in% c(4, 11)) %>% 
+  filter(freq >= 0.1)
+```
+
+# 4. Annotate clusters
+```{r annotate clusters}
+seurat_cluster_annotation_lst <- read_tsv("ref/cluster_annotation/filt3_NKmouse_seurat_annotation_230625.txt")
+
+annotationSeurat1_NKmouse_filt2_level
+celltype1_NKmouse_filt2_level
+celltype2_NKmouse_filt2_level
+
+seurat_cluster_annotation_lst2 <- seurat_cluster_annotation_lst %>% 
+  mutate(seurat_clusters = as.factor(seurat_clusters))
+seurat_cluster_annotation_lst2$seurat_clusters %>% class()
+seurat_cluster_annotation_lst2$annotationSeurat1 %>% unique()
+
+setdiff(unique(mouseNK_data$seurat_clusters), unique(seurat_cluster_annotation_lst2$seurat_clusters))
+setdiff(unique(seurat_cluster_annotation_lst2$seurat_clusters), unique(mouseNK_data$seurat_clusters))
+
+annotationSeurat1_df <- mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = rownames(mouseNK_data@meta.data)) %>% 
+  left_join(seurat_cluster_annotation_lst2) %>% 
+  select(cellbarcode2, annotationSeurat1, celltype1, celltype2)
+rownames(annotationSeurat1_df) <- annotationSeurat1_df$cellbarcode2
+
+mouseNK_data <- AddMetaData(object = mouseNK_data, metadata = annotationSeurat1_df)
+mouseNK_data@meta.data %>% 
+  select(seurat_clusters, annotationSeurat1) %>% unique()
+
+mouseNK_data$annotationSeurat1 <- factor(mouseNK_data$annotationSeurat1, levels = annotationSeurat1_NKmouse_filt2_level)
+mouseNK_data$celltype1 <- factor(mouseNK_data$celltype1, levels = celltype1_NKmouse_filt2_level)
+mouseNK_data$celltype2 <- factor(mouseNK_data$celltype2, levels = celltype2_NKmouse_filt2_level)
+```
+
+# 5. UMAP after annotation
+```{r UMAP after determining level}
+fig <- DimPlot(mouseNK_data, reduction = "umap", group.by = "annotationSeurat1")
+
+fig2 <- DimPlot(mouseNK_data, reduction = "umap", label = TRUE, label.size = 4, group.by = "annotationSeurat1")
+
+print(fig + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_annotationSeurat1.pdf"), width = 7, height = 7)
+
+pdf(str_glue("{outdir_pdf}/UMAP_grouped_annotationSeurat1_legend.pdf"))
+grid.draw(get_legend(fig))
+dev.off()
+
+print(fig2 + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_annotationSeurat1_label.pdf"), width = 7, height = 7)
+```
+
+```{r UMAP after celltype1}
+fig <- DimPlot(mouseNK_data, reduction = "umap",
+               group.by = "celltype1")
+
+fig2 <- DimPlot(mouseNK_data, reduction = "umap",
+                label = TRUE, 
+                label.size = 4,
+                group.by = "celltype1")
+
+print(fig + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_celltype1.pdf"), width = 7, height = 7)
+
+pdf(str_glue("{outdir_pdf}/UMAP_grouped_celltype1_legend.pdf"))
+grid.draw(get_legend(fig))
+dev.off()
+
+print(fig2 + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_celltype1_label.pdf"), width = 7, height = 7)
+```
+
+```{r UMAP after celltype2}
+fig <- DimPlot(mouseNK_data, reduction = "umap",
+               group.by = "celltype2")
+
+fig2 <- DimPlot(mouseNK_data, reduction = "umap",
+                label = TRUE, 
+                label.size = 4,
+                group.by = "celltype2")
+
+print(fig + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_celltype2.pdf"), width = 7, height = 7)
+
+pdf(str_glue("{outdir_pdf}/UMAP_grouped_celltype2_legend.pdf"))
+grid.draw(get_legend(fig))
+dev.off()
+
+print(fig2 + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_celltype2_label.pdf"), width = 7, height = 7)
+```
+
+```{r UMAP gemname3}
+fig <- DimPlot(mouseNK_data, reduction = "umap",
+               group.by = "gemname3")
+
+fig2 <- DimPlot(mouseNK_data, reduction = "umap",
+                label = TRUE, 
+                label.size = 4,
+                group.by = "gemname3")
+
+print(fig + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_gemname3.pdf"), width = 7, height = 7)
+
+pdf(str_glue("{outdir_pdf}/UMAP_grouped_gemname3_legend.pdf"))
+grid.draw(get_legend(fig))
+dev.off()
+
+print(fig2 + NoLegend())
+ggsave(str_glue("{outdir_pdf}/UMAP_grouped_gemname3_label.pdf"), width = 7, height = 7)
+```
+
+# 6. Count tumor cells by samples
+```{r tumor cell fraction}
+df_cellcount_samples_Tumor <- mouseNK_data@meta.data %>% 
+  group_by(gemname3) %>% 
+  summarise(
+    Sample_type = if_else(str_detect(disease_type2[1], "pre"), "Pre-tumor", "Tumor"),
+    Tumor_cells = sum(celltype2 == "Tumor"),
+    Nonmalignant_cells = sum(celltype2 != "Tumor"),
+    Total_cells = n()
+  ) %>% 
+  mutate(
+    Tumor_cell_freq = Tumor_cells / Total_cells
+  ) %>% 
+  arrange(Sample_type)
+
+df_cellcount_samples_Tumor %>% 
+  write_tsv(str_glue("{outdir_table}/mouseNK_cellcount_tumor_cells_by_samples.txt"))
+```
+
+# 7, Save metadata
+```{r save metadata}
+mouseNK_data@meta.data %>% 
+  mutate(cellbarcode2 = rownames(mouseNK_data@meta.data)) %>% 
+  tibble() %>% 
+  write_tsv(str_glue("{outdir_table}/mouseNK_annotationSeurat1_metadata.txt"))
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

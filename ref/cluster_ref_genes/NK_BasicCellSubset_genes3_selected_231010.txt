@@ -1,0 +1,18 @@
+gene	Hu_gene
+Nkg7	NKG7
+Gzma	GZMA
+Gzmb	GZMB
+Prf1	PRF1
+Tbx21	TBX21
+Ncr1	
+Il2rb	CD122
+Klrb1c	NK1.1
+Klrc1	NKG2A
+Klrc2	NKG2C
+Klrd1	KLRD1
+Klrg1	
+Klrk1	NKG2D
+Klra1	
+Klra4	
+Klra8	
+Mki67	MKI67
